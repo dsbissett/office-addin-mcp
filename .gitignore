@@ -1,0 +1,17 @@
+# Binaries
+/bin/
+/dist/
+/office-addin-mcp
+/office-addin-mcp.exe
+*.exe
+*.test
+*.out
+
+# Editor
+.idea/
+.vscode/
+*.swp
+
+# Coverage
+coverage.out
+coverage.html
