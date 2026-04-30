@@ -1,0 +1,14 @@
+{
+  "ok": false,
+  "error": {
+    "code": "schema_violation",
+    "message": "<MESSAGE>",
+    "category": "validation",
+    "retryable": false
+  },
+  "diagnostics": {
+    "tool": "fake.run",
+    "envelopeVersion": "v0.1",
+    "durationMs": 0
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "ok": false,
+  "error": {
+    "code": "unknown_tool",
+    "message": "<MESSAGE>",
+    "category": "not_found",
+    "retryable": false
+  },
+  "diagnostics": {
+    "tool": "missing.tool",
+    "envelopeVersion": "v0.1",
+    "durationMs": 0
+  }
+}

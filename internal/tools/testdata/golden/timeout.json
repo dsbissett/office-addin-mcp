@@ -1,0 +1,14 @@
+{
+  "ok": false,
+  "error": {
+    "code": "timeout",
+    "message": "<MESSAGE>",
+    "category": "timeout",
+    "retryable": true
+  },
+  "diagnostics": {
+    "tool": "fake.run",
+    "envelopeVersion": "v0.1",
+    "durationMs": 0
+  }
+}

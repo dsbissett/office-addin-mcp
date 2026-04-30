@@ -1,0 +1,11 @@
+{
+  "ok": true,
+  "data": {
+    "answer": 42
+  },
+  "diagnostics": {
+    "tool": "fake.run",
+    "envelopeVersion": "v0.1",
+    "durationMs": 0
+  }
+}

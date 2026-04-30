@@ -1,0 +1,14 @@
+{
+  "ok": false,
+  "error": {
+    "code": "fake_error",
+    "message": "<MESSAGE>",
+    "category": "protocol",
+    "retryable": false
+  },
+  "diagnostics": {
+    "tool": "fake.run",
+    "envelopeVersion": "v0.1",
+    "durationMs": 0
+  }
+}
