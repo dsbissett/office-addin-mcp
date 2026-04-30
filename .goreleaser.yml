@@ -1,0 +1,59 @@
+# goreleaser config for office-addin-mcp.
+#
+# Local snapshot build (no remote required):
+#   goreleaser release --snapshot --clean
+#
+# Tagged release (manual, no GitHub publish — PLAN.md Phase 6 keeps the v0.1.0
+# tag local-only):
+#   git tag v0.1.0
+#   goreleaser release --skip=publish --clean
+
+version: 2
+
+project_name: office-addin-mcp
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: office-addin-mcp
+    main: ./cmd/office-addin-mcp
+    binary: office-addin-mcp
+    env:
+      - CGO_ENABLED=0
+    ldflags:
+      - -s -w -X main.version={{.Version}}
+    goos:
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files:
+      - README.md
+      - CHANGELOG.md
+      - PLAN.md
+      - docs/**/*
+
+checksum:
+  name_template: 'checksums.txt'
+
+snapshot:
+  version_template: '{{ .Tag }}-next'
+
+changelog:
+  disable: true # CHANGELOG.md is hand-curated.
+
+release:
+  disable: true # No remote publish in v0.1.0; archives end up in dist/ locally.
