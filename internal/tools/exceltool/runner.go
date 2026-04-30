@@ -20,18 +20,18 @@ const targetSelectorBase = `
     "urlPattern": {"type": "string", "description": "Substring of the target URL (e.g. add-in taskpane URL)."}
 `
 
-// runPayload is the shared scaffolding every excel.* tool calls. It opens a
-// connection, resolves the requested target, attaches, runs the named
-// payload, and translates outcomes into a tools.Result.
+// runPayload is the shared scaffolding every excel.* tool calls. The
+// dispatcher hands us a connection (one-shot or session-pooled) and an
+// AttachedTarget; we run the named payload through the Office.js executor
+// and translate outcomes to a tools.Result.
 func runPayload(ctx context.Context, env *tools.RunEnv, sel tools.TargetSelector, payload string, args any) tools.Result {
-	att, err := tools.AttachTarget(ctx, env, sel)
+	att, err := env.Attach(ctx, sel)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			return tools.ClassifyCDPErr("attach_failed", err)
 		}
 		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
-	defer att.Close()
 
 	exec := officejs.New(att.Conn, att.SessionID)
 	raw, err := exec.Run(ctx, payload, args)
@@ -66,12 +66,6 @@ func codeOrDefault(code string) string {
 		return "office_js_error"
 	}
 	return code
-}
-
-// commonSelector pulls the shared selector fields from a typed params struct
-// that embeds them.
-type hasSelector interface {
-	selector() tools.TargetSelector
 }
 
 type selectorFields struct {

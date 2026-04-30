@@ -53,28 +53,12 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		returnByValue = *p.ReturnByValue
 	}
 
-	conn, err := env.OpenConn(ctx)
+	att, err := env.Attach(ctx, tools.TargetSelector{TargetID: p.TargetID, URLPattern: p.URLPattern})
 	if err != nil {
-		return tools.Fail(tools.CategoryConnection, "open_failed", err.Error(), true)
+		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
-	defer conn.Close()
 
-	target, err := tools.ResolveTarget(ctx, conn, tools.TargetSelector{
-		TargetID:   p.TargetID,
-		URLPattern: p.URLPattern,
-	})
-	if err != nil {
-		return tools.Fail(tools.CategoryNotFound, "resolve_target_failed", err.Error(), false)
-	}
-	env.Diag.TargetID = target.TargetID
-
-	sessionID, err := conn.AttachToTarget(ctx, target.TargetID)
-	if err != nil {
-		return tools.ClassifyCDPErr("attach_failed", err)
-	}
-	env.Diag.SessionID = sessionID
-
-	res, err := conn.Evaluate(ctx, sessionID, cdpproto.EvaluateParams{
+	res, err := att.Conn.Evaluate(ctx, att.SessionID, cdpproto.EvaluateParams{
 		Expression:    p.Expression,
 		AwaitPromise:  p.AwaitPromise,
 		ReturnByValue: returnByValue,

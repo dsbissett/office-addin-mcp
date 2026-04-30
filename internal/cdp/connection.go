@@ -46,8 +46,9 @@ type frame struct {
 
 // Connection is one WebSocket to a CDP endpoint. It is safe for concurrent use.
 type Connection struct {
-	ws     *websocket.Conn
-	nextID atomic.Int64
+	ws         *websocket.Conn
+	nextID     atomic.Int64
+	roundTrips atomic.Int64
 
 	mu        sync.Mutex
 	pending   map[int64]chan frame
@@ -189,9 +190,14 @@ type outgoing struct {
 	Params    any    `json:"params,omitempty"`
 }
 
+// RoundTrips returns the number of Send calls issued on this connection.
+// Used by Diagnostics.CDPRoundTrips to expose session-reuse savings.
+func (c *Connection) RoundTrips() int64 { return c.roundTrips.Load() }
+
 // Send issues a CDP command and waits for the matching response. sessionID may
 // be empty for browser-level commands; otherwise it routes via flatten sessions.
 func (c *Connection) Send(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error) {
+	c.roundTrips.Add(1)
 	c.mu.Lock()
 	if c.closed {
 		err := c.closedErr

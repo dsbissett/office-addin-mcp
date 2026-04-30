@@ -44,28 +44,12 @@ func runNavigate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
 
-	conn, err := env.OpenConn(ctx)
+	att, err := env.Attach(ctx, tools.TargetSelector{TargetID: p.TargetID, URLPattern: p.URLPattern})
 	if err != nil {
-		return tools.Fail(tools.CategoryConnection, "open_failed", err.Error(), true)
+		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
-	defer conn.Close()
 
-	target, err := tools.ResolveTarget(ctx, conn, tools.TargetSelector{
-		TargetID:   p.TargetID,
-		URLPattern: p.URLPattern,
-	})
-	if err != nil {
-		return tools.Fail(tools.CategoryNotFound, "resolve_target_failed", err.Error(), false)
-	}
-	env.Diag.TargetID = target.TargetID
-
-	sessionID, err := conn.AttachToTarget(ctx, target.TargetID)
-	if err != nil {
-		return tools.ClassifyCDPErr("attach_failed", err)
-	}
-	env.Diag.SessionID = sessionID
-
-	res, err := conn.PageNavigate(ctx, sessionID, p.URL)
+	res, err := att.Conn.PageNavigate(ctx, att.SessionID, p.URL)
 	if err != nil {
 		return tools.ClassifyCDPErr("navigate_failed", err)
 	}

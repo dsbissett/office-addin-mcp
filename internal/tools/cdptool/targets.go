@@ -43,11 +43,10 @@ func runGetTargets(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
 
-	conn, err := env.OpenConn(ctx)
+	conn, err := env.Conn(ctx)
 	if err != nil {
 		return tools.Fail(tools.CategoryConnection, "open_failed", err.Error(), true)
 	}
-	defer conn.Close()
 
 	targets, err := conn.GetTargets(ctx)
 	if err != nil {
@@ -96,7 +95,7 @@ type selectTargetParams struct {
 func SelectTarget() tools.Tool {
 	return tools.Tool{
 		Name:        "cdp.selectTarget",
-		Description: "Resolve a target by id or URL substring and return its TargetInfo. No state is persisted in one-shot mode.",
+		Description: "Resolve a target by id or URL substring and return its TargetInfo. In session mode this also primes the session selector cache so a subsequent cdp.evaluate hits without a fresh attach.",
 		Schema:      json.RawMessage(selectTargetSchema),
 		Run:         runSelectTarget,
 	}
@@ -108,21 +107,14 @@ func runSelectTarget(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
 
-	conn, err := env.OpenConn(ctx)
-	if err != nil {
-		return tools.Fail(tools.CategoryConnection, "open_failed", err.Error(), true)
-	}
-	defer conn.Close()
-
-	target, err := tools.ResolveTarget(ctx, conn, tools.TargetSelector{
-		TargetID:   p.TargetID,
-		URLPattern: p.URLPattern,
-	})
+	// Use Attach so the result populates the session selector cache; the
+	// caller doesn't actually need the flatten session, but priming it makes
+	// subsequent evaluate / navigate calls cheaper in daemon mode.
+	att, err := env.Attach(ctx, tools.TargetSelector{TargetID: p.TargetID, URLPattern: p.URLPattern})
 	if err != nil {
 		return tools.Fail(tools.CategoryNotFound, "resolve_target_failed", err.Error(), false)
 	}
-	env.Diag.TargetID = target.TargetID
 	return tools.OK(struct {
 		Target cdpproto.TargetInfo `json:"target"`
-	}{Target: target})
+	}{Target: att.Target})
 }

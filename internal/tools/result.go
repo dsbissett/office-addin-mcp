@@ -8,7 +8,11 @@ package tools
 
 // EnvelopeVersion is stamped into Diagnostics.EnvelopeVersion. Bump on any
 // breaking change to Envelope, EnvelopeError, or Diagnostics field semantics.
-const EnvelopeVersion = "v0.1"
+//
+//	v0.1 — initial uniform envelope (Phase 3).
+//	v0.2 — sessionId now means the user/Phase-5 session; cdpSessionId carries
+//	       the CDP flatten session id; cdpRoundTrips diagnostic added.
+const EnvelopeVersion = "v0.2"
 
 // Error categories. New categories must also be documented in
 // docs/tool-contracts.md (Phase 6) and added to the golden-JSON fixtures if a
@@ -42,13 +46,20 @@ type EnvelopeError struct {
 }
 
 // Diagnostics carries observability fields populated by every tool. Variable
-// fields (DurationMs) are stamped by the dispatcher; the tool fills in
-// Endpoint/TargetID/SessionID where relevant.
+// fields (DurationMs, CDPRoundTrips) are stamped by the dispatcher; the tool
+// fills in TargetID/CDPSessionID/Endpoint where relevant.
 type Diagnostics struct {
 	Tool            string `json:"tool"`
 	EnvelopeVersion string `json:"envelopeVersion"`
-	SessionID       string `json:"sessionId,omitempty"`
-	TargetID        string `json:"targetId,omitempty"`
-	Endpoint        string `json:"endpoint,omitempty"`
-	DurationMs      int64  `json:"durationMs"`
+	// SessionID is the user-facing (Phase 5) session id. For one-shot calls
+	// this is empty unless the caller explicitly named one.
+	SessionID string `json:"sessionId,omitempty"`
+	// CDPSessionID is the CDP flatten session id assigned by Target.attachToTarget.
+	CDPSessionID string `json:"cdpSessionId,omitempty"`
+	TargetID     string `json:"targetId,omitempty"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	// CDPRoundTrips is the count of CDP commands issued during this tool call.
+	// Drops sharply on session reuse (PLAN.md §7 Phase 5 deliverable).
+	CDPRoundTrips int64 `json:"cdpRoundTrips"`
+	DurationMs    int64 `json:"durationMs"`
 }

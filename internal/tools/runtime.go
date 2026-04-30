@@ -10,9 +10,10 @@ import (
 
 // Request is the dispatcher's input.
 type Request struct {
-	Tool     string
-	Params   []byte // raw JSON bytes for the params object
-	Endpoint webview2.Config
+	Tool      string
+	Params    []byte // raw JSON bytes for the params object
+	Endpoint  webview2.Config
+	SessionID string // Phase 5 user session id; empty resolves to "default"
 }
 
 // Result is what a tool's Run function returns. Exactly one of Data/Err is set.
@@ -45,15 +46,32 @@ func FailWithDetails(category, code, msg string, retryable bool, details map[str
 	}}
 }
 
-// RunEnv is what each tool's Run sees. It is constructed by Dispatch and is
-// not safe for use after Run returns.
+// AttachedTarget bundles a connection + resolved target + CDP flatten session.
+// Tools MUST NOT close the connection — the dispatcher owns its lifetime.
+type AttachedTarget struct {
+	Conn      *cdp.Connection
+	Target    cdp.TargetInfo
+	SessionID string // CDP flatten session id (Target.attachToTarget result)
+}
+
+// RunEnv is the runtime context handed to a tool's Run function. The
+// dispatcher constructs it per call; helpers close over either an ephemeral
+// connection (one-shot mode) or a session-pooled one (daemon mode). Tools
+// must NOT manage connection lifetime — call Conn or Attach and use the
+// result for the duration of Run.
 type RunEnv struct {
 	Diag *Diagnostics
 
-	// OpenConn dials a fresh CDP connection in one-shot mode. The tool owns
-	// the lifetime — it must Close. Phase 5 will replace this with a
-	// session-pooled handle.
-	OpenConn func(ctx context.Context) (*cdp.Connection, error)
+	// Conn returns the CDP connection for this call. In session mode it may
+	// be reused across many calls; in one-shot mode it was dialed lazily for
+	// this call. Idempotent — repeated calls return the same connection.
+	Conn func(ctx context.Context) (*cdp.Connection, error)
+
+	// Attach returns a connection + resolved target + flatten session id.
+	// In session mode, hits a per-session selector cache so repeat calls skip
+	// Target.getTargets and Target.attachToTarget — surfacing as a sharp drop
+	// in Diagnostics.CDPRoundTrips after the first call.
+	Attach func(ctx context.Context, sel TargetSelector) (*AttachedTarget, error)
 }
 
 // ClassifyCDPErr maps a low-level CDP/transport error to a uniform Result.
