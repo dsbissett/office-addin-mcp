@@ -431,6 +431,12 @@ func TestRunListTools(t *testing.T) {
 	want := map[string]bool{
 		"cdp.evaluate": false, "cdp.getTargets": false,
 		"cdp.selectTarget": false, "browser.navigate": false,
+		"excel.readRange": false, "excel.writeRange": false,
+		"excel.listWorksheets": false, "excel.getActiveWorksheet": false,
+		"excel.activateWorksheet": false, "excel.createWorksheet": false,
+		"excel.deleteWorksheet": false, "excel.getSelectedRange": false,
+		"excel.setSelectedRange": false, "excel.runScript": false,
+		"excel.createTable": false,
 	}
 	for _, tt := range out.Tools {
 		if _, ok := want[tt.Name]; ok {
