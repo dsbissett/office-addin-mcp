@@ -1,0 +1,23 @@
+{
+  "name": "@dsbissett/office-addin-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for driving Office add-ins via WebView2/CDP",
+  "keywords": ["mcp", "excel", "office", "addin", "webview2", "cdp"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dsbissett/office-addin-mcp"
+  },
+  "license": "MIT",
+  "engines": { "node": ">=14" },
+  "bin": {
+    "office-addin-mcp": "bin/office-addin-mcp.js"
+  },
+  "files": ["bin"],
+  "optionalDependencies": {
+    "@dsbissett/office-addin-mcp-win32-x64": "0.1.0",
+    "@dsbissett/office-addin-mcp-darwin-x64": "0.1.0",
+    "@dsbissett/office-addin-mcp-darwin-arm64": "0.1.0",
+    "@dsbissett/office-addin-mcp-linux-x64": "0.1.0",
+    "@dsbissett/office-addin-mcp-linux-arm64": "0.1.0"
+  }
+}

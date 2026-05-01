@@ -1,0 +1,9 @@
+{
+  "name": "@dsbissett/office-addin-mcp-win32-x64",
+  "version": "0.1.0",
+  "description": "Windows x64 binary for @dsbissett/office-addin-mcp",
+  "os": ["win32"],
+  "cpu": ["x64"],
+  "license": "MIT",
+  "files": ["office-addin-mcp.exe"]
+}

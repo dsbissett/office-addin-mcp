@@ -1,0 +1,9 @@
+{
+  "name": "@dsbissett/office-addin-mcp-linux-arm64",
+  "version": "0.1.0",
+  "description": "Linux arm64 binary for @dsbissett/office-addin-mcp",
+  "os": ["linux"],
+  "cpu": ["arm64"],
+  "license": "MIT",
+  "files": ["office-addin-mcp"]
+}
