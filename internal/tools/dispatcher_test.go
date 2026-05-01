@@ -28,6 +28,7 @@ func fakeTool() Tool {
 		Name:        "fake.run",
 		Description: "Test-only tool that exercises dispatcher envelope shapes.",
 		Schema:      json.RawMessage(fakeSchema),
+		NoSession:   true,
 		Run: func(ctx context.Context, raw json.RawMessage, _ *RunEnv) Result {
 			var p struct {
 				Mode string `json:"mode"`

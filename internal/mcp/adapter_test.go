@@ -27,6 +27,7 @@ func newTestServer(t *testing.T) (*sdk.ClientSession, func()) {
 		Name:        "fake.run",
 		Description: "test tool",
 		Schema:      json.RawMessage(fakeOKSchema),
+		NoSession:   true,
 		Run: func(_ context.Context, raw json.RawMessage, _ *tools.RunEnv) tools.Result {
 			var p struct {
 				Mode string `json:"mode"`
