@@ -1,0 +1,123 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # required for mcp-publisher github-oidc
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Extract version from tag
+        id: tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Check tag version is greater than npm latest
+        id: version-check
+        run: |
+          local="${{ steps.tag.outputs.version }}"
+          published=$(npm view @dsbissett/office-addin-mcp version --tag latest 2>/dev/null || echo "0.0.0")
+          echo "Tag version:       $local"
+          echo "Published version: $published"
+          newer=$(node -e "
+            const parse = v => v.split('.').map(Number);
+            const [ma,mi,pa] = parse('$local');
+            const [mb,mib,pb] = parse('$published');
+            process.stdout.write(ma>mb || (ma===mb && mi>mib) || (ma===mb && mi===mib && pa>pb) ? 'true' : 'false');
+          ")
+          echo "should_publish=$newer" >> "$GITHUB_OUTPUT"
+          if [ "$newer" = "false" ]; then
+            echo "::warning::$GITHUB_REF_NAME ($local) is not greater than npm latest ($published); skipping publish."
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.version-check.outputs.should_publish == 'true'
+        with:
+          go-version-file: 'go.mod'
+          cache: true
+
+      - name: Build cross-platform binaries
+        if: steps.version-check.outputs.should_publish == 'true'
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: build --clean
+
+      - uses: actions/setup-node@v4
+        if: steps.version-check.outputs.should_publish == 'true'
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Stage binaries and set package versions
+        if: steps.version-check.outputs.should_publish == 'true'
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          update_pkg() {
+            node -e "
+              const fs = require('fs'), p = JSON.parse(fs.readFileSync('$1'));
+              p.version = '$VERSION';
+              if (p.optionalDependencies)
+                Object.keys(p.optionalDependencies).forEach(k => p.optionalDependencies[k] = '$VERSION');
+              fs.writeFileSync('$1', JSON.stringify(p, null, 2) + '\n');
+            "
+          }
+          for platform in win32-x64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
+            update_pkg "npm/$platform/package.json"
+          done
+          update_pkg npm/main/package.json
+
+          cp dist/office-addin-mcp_windows_amd64_v1/office-addin-mcp.exe npm/win32-x64/
+          cp dist/office-addin-mcp_darwin_amd64_v1/office-addin-mcp      npm/darwin-x64/
+          cp dist/office-addin-mcp_darwin_arm64_v8.0/office-addin-mcp    npm/darwin-arm64/
+          cp dist/office-addin-mcp_linux_amd64_v1/office-addin-mcp       npm/linux-x64/
+          cp dist/office-addin-mcp_linux_arm64_v8.0/office-addin-mcp     npm/linux-arm64/
+
+      - name: Publish platform packages to npm
+        if: steps.version-check.outputs.should_publish == 'true'
+        run: |
+          for platform in win32-x64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
+            (cd "npm/$platform" && npm publish --access public)
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish main package to npm
+        if: steps.version-check.outputs.should_publish == 'true'
+        run: cd npm/main && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Install mcp-publisher
+        if: steps.version-check.outputs.should_publish == 'true'
+        run: |
+          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v1.7.0/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Set mcp.json version
+        if: steps.version-check.outputs.should_publish == 'true'
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          node -e "
+            const fs = require('fs'), p = JSON.parse(fs.readFileSync('mcp.json'));
+            p.version = '$VERSION';
+            p.packages[0].version = '$VERSION';
+            fs.writeFileSync('mcp.json', JSON.stringify(p, null, 2) + '\n');
+          "
+
+      - name: Publish to MCP registry
+        if: steps.version-check.outputs.should_publish == 'true'
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish mcp.json
