@@ -1,163 +1,242 @@
 # office-addin-mcp
 
-A Go binary that drives Office add-ins running inside WebView2 over the
-Chrome DevTools Protocol. It speaks a small, stable JSON tool surface
-(`{ok, data, error, diagnostics}`) designed for AI agents.
+MCP server for driving Office add-ins and Excel via WebView2 and the Chrome DevTools Protocol.
 
-> v0.1.0 — see [CHANGELOG.md](CHANGELOG.md).
+`office-addin-mcp` is a Go binary that exposes a high-level tool surface for Excel and browser add-ins running inside WebView2. It speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio or a local TCP daemon.
 
-## What it does
+> v0.1.0 — see [CHANGELOG.md](CHANGELOG.md)
 
-- Exposes a high-level Office add-in tool surface for AI agents:
-  `addin.*` (lifecycle / detect / launch / stop / dialog),
-  `pages.*` (target enumeration & selection), `page.*` (snapshot,
-  screenshot, click, fill, evaluate, navigate, …), and `excel.*` (37
-  tools backed by embedded Office.js payloads). This is what
-  `tools/list` advertises by default.
-- Optionally exposes ~411 raw CDP methods (`cdp.<domain>.<method>`,
-  code-generated from Chrome's vendored protocol JSON) when run with
-  `--expose-raw-cdp`. See [docs/cdp-tools.md](docs/cdp-tools.md).
-- Reads / writes Excel ranges, manages worksheets, creates tables, runs
-  arbitrary `Excel.run` scripts via embedded Office.js payloads.
+## Features
+
+- **37 Excel tools** — read/write ranges, worksheets, tables, charts, pivot tables, and arbitrary `Excel.run` scripts via embedded Office.js payloads
+- **Page interaction** — screenshot, snapshot, click, fill, type, hover, navigate, evaluate, console log, network log, and more
+- **Add-in lifecycle** — detect, launch, and stop add-ins; open task-pane dialogs
+- **~411 raw CDP methods** — code-generated from Chrome's protocol JSON, hidden by default (`--expose-raw-cdp` to enable)
+- **Daemon mode** — persistent local server with automatic session reconnect for low-latency repeated calls
+- **Stdio mode** — pipe-friendly MCP transport for agents that read/write JSON on stdin/stdout
+
+## Requirements
+
+| Requirement | Notes |
+|---|---|
+| **Excel + Windows 10/11** | Required for `excel.*` and `addin.*` tools |
+| **Node.js 14+** | For `npx` install |
+| **Go 1.22+** | Build from source only |
+| macOS / Linux | Supported for `page.*` / `cdp.*` tools against headless Chrome |
 
 ## Install
 
+### npm (recommended)
+
 ```bash
-go install github.com/dsbissett/office-addin-mcp/cmd/office-addin-mcp@v0.1.0
+npm install -g @dsbissett/office-addin-mcp
 ```
 
-Or grab a release archive (see `.goreleaser.yml` / `goreleaser release
---snapshot --clean` for a local build).
-
-Requirements: Go 1.22+, Windows 10/11 with Excel + a manifest-based
-add-in for the Excel-specific tools. macOS and Linux work for the CDP /
-browser tools against headless Chrome.
-
-## Quick start
-
-1. **Launch Excel with the WebView2 debug port** (one time per Excel
-   session — auto-launch is deferred per PLAN.md §11 Q7):
-
-   ```powershell
-   $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
-   excel.exe my-workbook.xlsx
-   ```
-
-2. **List the targets** (the legacy `cdp.getTargets` returns a filtered list; `cdp.target.getTargets` is the raw CDP passthrough):
-
-   ```bash
-   office-addin-mcp call --tool cdp.getTargets --browser-url http://127.0.0.1:9222
-   ```
-
-   **Capture a screenshot to disk** (binary tool, optional `outputPath`):
-
-   ```bash
-   office-addin-mcp call \
-     --tool cdp.page.captureScreenshot \
-     --param '{"urlPattern":"taskpane","outputPath":"./shot.png"}' \
-     --browser-url http://127.0.0.1:9222
-   ```
-
-3. **Read a range:**
-
-   ```bash
-   office-addin-mcp call \
-     --tool excel.readRange \
-     --param '{"address":"A1:D10","urlPattern":"taskpane"}' \
-     --browser-url http://127.0.0.1:9222
-   ```
-
-   The `urlPattern` selector picks the WebView2 page hosting the add-in
-   (substring match against the target URL).
-
-4. **List every tool + JSON Schema:**
-
-   ```bash
-   office-addin-mcp list-tools
-   ```
-
-## Daemon mode
-
-For repeated calls (especially against the same workbook), run a daemon.
-`call` autoroutes to it via a well-known socket file.
+Or run without installing:
 
 ```bash
-# Start the daemon (foreground; Ctrl-C to stop).
+npx @dsbissett/office-addin-mcp@latest --help
+```
+
+Pre-built binaries for Windows x64, macOS (Intel + Apple Silicon), and Linux (x64 + ARM64) are installed automatically via optional dependencies.
+
+### Build from source
+
+```bash
+go install github.com/dsbissett/office-addin-mcp/cmd/office-addin-mcp@latest
+```
+
+## Excel Setup
+
+Launch Excel with the WebView2 remote debugging port open **once per Excel session**:
+
+**PowerShell:**
+
+```powershell
+$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
+Start-Process excel.exe my-workbook.xlsx
+```
+
+**Command Prompt:**
+
+```cmd
+set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222
+excel.exe my-workbook.xlsx
+```
+
+The server connects to `http://127.0.0.1:9222` by default. Pass `--browser-url` to change the address.
+
+## MCP Client Configuration
+
+### Claude Code
+
+```bash
+claude mcp add office-addin-mcp -- npx -y @dsbissett/office-addin-mcp@latest
+```
+
+Or add manually to `.claude/mcp.json` (project) or `~/.claude/mcp.json` (global):
+
+```json
+{
+  "mcpServers": {
+    "office-addin-mcp": {
+      "command": "npx",
+      "args": ["-y", "@dsbissett/office-addin-mcp@latest"]
+    }
+  }
+}
+```
+
+### VS Code (GitHub Copilot)
+
+Add to your workspace `.vscode/mcp.json`:
+
+```json
+{
+  "servers": {
+    "office-addin-mcp": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@dsbissett/office-addin-mcp@latest"]
+    }
+  }
+}
+```
+
+Alternatively, open the Command Palette → **MCP: Add Server** and paste the command.
+
+### Cursor
+
+Add to `~/.cursor/mcp.json` (global) or `.cursor/mcp.json` (project):
+
+```json
+{
+  "mcpServers": {
+    "office-addin-mcp": {
+      "command": "npx",
+      "args": ["-y", "@dsbissett/office-addin-mcp@latest"]
+    }
+  }
+}
+```
+
+### Codex (OpenAI)
+
+Add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.office-addin-mcp]
+command = "npx"
+args = ["-y", "@dsbissett/office-addin-mcp@latest"]
+```
+
+### Windsurf
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "office-addin-mcp": {
+      "command": "npx",
+      "args": ["-y", "@dsbissett/office-addin-mcp@latest"]
+    }
+  }
+}
+```
+
+### Generic (any MCP-compatible client)
+
+The server speaks MCP over stdio. Configure your client with:
+
+- **command:** `npx`
+- **args:** `["-y", "@dsbissett/office-addin-mcp@latest"]`
+- **transport:** `stdio`
+
+## Usage
+
+### Quick start
+
+```bash
+# List all available tools
+office-addin-mcp list-tools
+
+# Read a worksheet range
+office-addin-mcp call \
+  --tool excel.readRange \
+  --param '{"address":"A1:D10","urlPattern":"taskpane"}' \
+  --browser-url http://127.0.0.1:9222
+
+# Capture a screenshot
+office-addin-mcp call \
+  --tool page.screenshot \
+  --param '{"urlPattern":"taskpane","outputPath":"./shot.png"}' \
+  --browser-url http://127.0.0.1:9222
+
+# List WebView2 targets
+office-addin-mcp call --tool pages.list --browser-url http://127.0.0.1:9222
+```
+
+The `urlPattern` parameter selects the WebView2 page by substring match against the target URL.
+
+### Daemon mode
+
+Run a persistent daemon for low-latency repeated calls. Sessions reconnect automatically within a 3-reconnect-per-60s budget.
+
+```bash
+# Terminal 1 — start the daemon
 office-addin-mcp daemon --idle-timeout 30m
 
-# In another shell — `call` finds the daemon and routes there.
-office-addin-mcp call --tool excel.readRange --param '{"address":"A1"}' \
+# Terminal 2 — calls automatically route to the daemon
+office-addin-mcp call \
+  --tool excel.readRange \
+  --param '{"address":"A1"}' \
   --browser-url http://127.0.0.1:9222
 ```
 
-Watch `diagnostics.cdpRoundTrips` in the response — the first call pays
-3 (`Target.getTargets` + `Target.attachToTarget` + `Runtime.evaluate`);
-subsequent calls in the same session drop to 1.
+The daemon writes `{port, token, pid}` to `%LOCALAPPDATA%\office-addin-mcp\daemon.json` (Windows) or `$XDG_CACHE_HOME/office-addin-mcp/daemon.json` (mode 0600). Pass `--no-daemon` to force in-process dispatch.
 
-The daemon writes `{port, token, pid}` to
-`%LOCALAPPDATA%\office-addin-mcp\daemon.json` (Windows) or
-`$XDG_CACHE_HOME/office-addin-mcp/daemon.json` (other) with mode 0600.
+Watch `diagnostics.cdpRoundTrips` in the response — the first call costs 3 round-trips; subsequent calls in the same session drop to 1.
 
-To force in-process dispatch, pass `--no-daemon` to `call`.
-
-### Raw CDP surface (`--expose-raw-cdp`)
-
-By default the server hides the raw `cdp.*` tool surface; agents see
-only the high-level `addin.*`, `pages.*`, `page.*`, and `excel.*`
-tools. Pass `--expose-raw-cdp` (or set
-`OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP=1`) to additionally register the
-~411 code-generated CDP methods plus the hand-written
-`cdp.selectTarget` cache primer.
-
-### Dangerous CDP methods
-
-A small set of generated tools (`cdp.browser.crash`,
-`cdp.runtime.terminateExecution`, `cdp.network.clearBrowserCache`, …
-see [docs/cdp-tools.md](docs/cdp-tools.md)) refuse by default. Pass
-`--allow-dangerous-cdp` (or set `OAMCP_ALLOW_DANGEROUS_CDP=1`) to
-enable them. Refusals come back as
-`{ok:false, error:{category:"unsupported", code:"dangerous_disabled"}}`.
-
-## Stdio mode
-
-For agents that prefer pipes over TCP:
+### Stdio mode (MCP protocol)
 
 ```bash
 office-addin-mcp serve --stdio
-# Then write newline-delimited JSON requests to stdin; envelopes come
-# back on stdout. Sessions persist for the stream lifetime.
 ```
 
-Request shape:
+Reads newline-delimited MCP JSON requests from stdin and writes responses to stdout. This is the transport used by all MCP clients above.
 
-```json
-{"tool":"cdp.evaluate","params":{"expression":"1+1"},"sessionId":"default","endpoint":{"browserUrl":"http://127.0.0.1:9222"}}
-```
+## Tool Groups
+
+| Prefix | Count | Description |
+|---|---|---|
+| `excel.*` | 37 | Read/write ranges, worksheets, tables, charts, pivot tables, custom XML, `Excel.run` scripts |
+| `page.*` | ~15 | Screenshot, snapshot, click, fill, type, hover, navigate, evaluate, wait, console log, network log |
+| `pages.*` | 4 | List, select, close, dialog |
+| `addin.*` | 6 | Detect, launch, stop, context info, CF runtime info, dialog |
+| `cdp.*` | ~411 | Raw Chrome DevTools Protocol methods (hidden by default, enable with `--expose-raw-cdp`) |
+
+## Flags & Environment Variables
+
+| Flag | Env | Default | Description |
+|---|---|---|---|
+| `--browser-url` | `OAMCP_BROWSER_URL` | `http://127.0.0.1:9222` | WebView2 / Chrome debug endpoint |
+| `--expose-raw-cdp` | `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP` | off | Register ~411 raw `cdp.*` methods |
+| `--allow-dangerous-cdp` | `OAMCP_ALLOW_DANGEROUS_CDP` | off | Enable crash/terminate CDP methods |
+| `--no-daemon` | — | — | Force in-process dispatch, skip daemon lookup |
+| `--idle-timeout` | — | `30m` | Daemon: shut down after this idle period |
 
 ## Subcommands
 
-| Command       | Purpose                                                       |
-| ------------- | ------------------------------------------------------------- |
-| `call`        | Invoke one tool. Auto-routes to a running daemon.             |
-| `list-tools`  | Print tool catalog (name + description + JSON Schema).        |
-| `daemon`      | Run the persistent TCP server.                                |
-| `serve --stdio` | Read JSON requests on stdin, write envelopes on stdout.     |
-| `version`     | Print binary version.                                         |
-| `help`        | Print usage.                                                  |
-
-## Documentation
-
-- [docs/architecture.md](docs/architecture.md) — package layout, data
-  flow, session lifecycle, code generation pipeline.
-- [docs/tool-contracts.md](docs/tool-contracts.md) — envelope spec, error
-  categories, tool catalog with stability marks, dangerous-method
-  gating, binary `outputPath` semantics.
-- [docs/cdp-tools.md](docs/cdp-tools.md) — full ~411-tool index by
-  domain, regenerated by `go generate ./...`.
-- [docs/migration-notes.md](docs/migration-notes.md) — TypeScript
-  `excel-webview2-mcp` → Go `office-addin-mcp` parity table, manual
-  Excel acceptance checklist, protocol-roll procedure.
+| Command | Description |
+|---|---|
+| `call` | Invoke one tool. Auto-routes to a running daemon. |
+| `list-tools` | Print tool catalog with name, description, and JSON Schema. |
+| `daemon` | Run the persistent local TCP server. |
+| `serve --stdio` | Read MCP JSON requests from stdin, write responses to stdout. |
+| `version` | Print binary version. |
+| `help` | Print usage. |
 
 ## License
 
-TBD.
+MIT
