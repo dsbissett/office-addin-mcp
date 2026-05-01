@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.dsbissett/office-addin-mcp",
-  "description": "MCP server for driving Office add-ins via WebView2/CDP. Exposes high-level excel.*, page.*, pages.*, and addin.* tools for AI agents.",
+  "description": "MCP server for Office add-ins via WebView2/CDP. Provides excel.*, page.*, and addin.* tools.",
   "repository": {
     "url": "https://github.com/dsbissett/office-addin-mcp",
     "source": "github"

@@ -98,4 +98,7 @@ done
 echo "==> publishing @dsbissett/office-addin-mcp@$VERSION"
 (cd npm/main && npm publish --access public)
 
+echo "==> publishing to MCP registry"
+mcp-publisher publish mcp.json
+
 echo "==> done. install with: npm install -g @dsbissett/office-addin-mcp"
