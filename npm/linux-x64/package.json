@@ -2,8 +2,14 @@
   "name": "@dsbissett/office-addin-mcp-linux-x64",
   "version": "0.1.0",
   "description": "Linux x64 binary for @dsbissett/office-addin-mcp",
-  "os": ["linux"],
-  "cpu": ["x64"],
+  "os": [
+    "linux"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "license": "MIT",
-  "files": ["office-addin-mcp"]
+  "files": [
+    "office-addin-mcp"
+  ]
 }

@@ -5,7 +5,9 @@
   "mcpServers": {
     "office-addin-mcp": {
       "command": "npx",
-      "args": ["@dsbissett/office-addin-mcp@latest"]
+      "args": [
+        "@dsbissett/office-addin-mcp@latest"
+      ]
     }
   }
 }

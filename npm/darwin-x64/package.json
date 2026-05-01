@@ -2,8 +2,14 @@
   "name": "@dsbissett/office-addin-mcp-darwin-x64",
   "version": "0.1.0",
   "description": "macOS x64 binary for @dsbissett/office-addin-mcp",
-  "os": ["darwin"],
-  "cpu": ["x64"],
+  "os": [
+    "darwin"
+  ],
+  "cpu": [
+    "x64"
+  ],
   "license": "MIT",
-  "files": ["office-addin-mcp"]
+  "files": [
+    "office-addin-mcp"
+  ]
 }

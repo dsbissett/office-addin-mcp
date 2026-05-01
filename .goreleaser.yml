@@ -3,10 +3,8 @@
 # Local snapshot build (no remote required):
 #   goreleaser release --snapshot --clean
 #
-# Tagged release (manual, no GitHub publish — PLAN.md Phase 6 keeps the v0.1.0
-# tag local-only):
-#   git tag v0.1.0
-#   goreleaser release --skip=publish --clean
+# Build binaries for npm publish (no GitHub release):
+#   goreleaser build --clean
 
 version: 2
 
@@ -42,9 +40,6 @@ archives:
         formats: [zip]
     files:
       - README.md
-      - CHANGELOG.md
-      - PLAN.md
-      - docs/**/*
 
 checksum:
   name_template: 'checksums.txt'
