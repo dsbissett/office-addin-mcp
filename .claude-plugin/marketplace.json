@@ -1,0 +1,17 @@
+{
+  "name": "office-addin-mcp-plugins",
+  "version": "0.1.0",
+  "description": "MCP server for driving Office add-ins via WebView2/CDP.",
+  "repository": "https://github.com/dsbissett/office-addin-mcp",
+  "owner": {
+    "name": "Drake Bissett",
+    "email": "dsbissett@gmail.com"
+  },
+  "plugins": [
+    {
+      "name": "office-addin-mcp",
+      "source": "./",
+      "description": "MCP server for driving Office add-ins via WebView2/CDP. Provides excel.*, page.*, pages.*, and addin.* tools for AI agents."
+    }
+  ]
+}

@@ -55,6 +55,9 @@ update_version npm/main/package.json
 for platform in win32-x64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
   update_version "npm/$platform/package.json"
 done
+update_version mcp.json
+update_version .claude-plugin/plugin.json
+update_version .claude-plugin/marketplace.json
 
 # Build all platform binaries.
 echo "==> building binaries (goreleaser build --clean)"

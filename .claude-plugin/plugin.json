@@ -1,0 +1,11 @@
+{
+  "name": "office-addin-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for driving Office add-ins via WebView2/CDP. Provides excel.*, page.*, pages.*, and addin.* tools for AI agents.",
+  "mcpServers": {
+    "office-addin-mcp": {
+      "command": "npx",
+      "args": ["@dsbissett/office-addin-mcp@latest"]
+    }
+  }
+}
