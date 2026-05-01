@@ -12,7 +12,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/dsbissett/office-addin-mcp"
+    "url": "git+https://github.com/dsbissett/office-addin-mcp.git"
   },
   "license": "MIT",
   "engines": {
