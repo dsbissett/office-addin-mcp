@@ -53,6 +53,42 @@ func runGetActiveWorksheet(ctx context.Context, raw json.RawMessage, env *tools.
 	return runPayload(ctx, env, p.selector(), "excel.getActiveWorksheet", map[string]any{})
 }
 
+const worksheetInfoSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "excel.worksheetInfo parameters",
+  "type": "object",
+  "properties": {
+    "sheet": {"type": "string", "description": "Worksheet name. Omit to use the active worksheet."},` + targetSelectorBase + `},
+  "additionalProperties": false
+}`
+
+type optionalSheetParams struct {
+	Sheet string `json:"sheet,omitempty"`
+	selectorFields
+}
+
+// WorksheetInfo returns the excel.worksheetInfo tool definition.
+func WorksheetInfo() tools.Tool {
+	return tools.Tool{
+		Name:        "excel.worksheetInfo",
+		Description: "Metadata for a single worksheet: used range address, visibility, protection, gridlines, tab color, and dimensions.",
+		Schema:      json.RawMessage(worksheetInfoSchema),
+		Run:         runWorksheetInfo,
+	}
+}
+
+func runWorksheetInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Result {
+	var p optionalSheetParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
+	}
+	args := map[string]any{}
+	if p.Sheet != "" {
+		args["sheet"] = p.Sheet
+	}
+	return runPayload(ctx, env, p.selector(), "excel.worksheetInfo", args)
+}
+
 const namedWorksheetSchema = `{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "named worksheet parameters",

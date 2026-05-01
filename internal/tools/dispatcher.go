@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
+	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
 
 // Dispatcher binds a Registry to a session.Manager. In daemon mode the
@@ -22,6 +24,19 @@ type Dispatcher struct {
 	// One-shot callers set this; daemons leave it false so connections
 	// persist for reuse.
 	Ephemeral bool
+	// AllowDangerous propagates into RunEnv.AllowDangerous. Set from the
+	// process-wide --allow-dangerous-cdp flag / OAMCP_ALLOW_DANGEROUS_CDP
+	// env. Off by default — dangerous CDP methods refuse without it.
+	AllowDangerous bool
+	// SetEndpoint, if non-nil, is wired into RunEnv.SetEndpoint and lets
+	// lifecycle tools (addin.launch) reconfigure the server's default CDP
+	// endpoint after sideloading Excel.
+	SetEndpoint func(webview2.Config)
+	// Manifest returns the active manifest if any. Wired into RunEnv.Manifest.
+	Manifest func() *addin.Manifest
+	// SetManifest stores a manifest at server scope (Phase 3). Wired into
+	// RunEnv.SetManifest.
+	SetManifest func(*addin.Manifest)
 }
 
 // NewDispatcher builds a Dispatcher.
@@ -77,6 +92,18 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 		}})
 	}
 
+	if tool.NoSession {
+		env := &RunEnv{
+			Diag:           &diag,
+			AllowDangerous: d.AllowDangerous,
+			SetEndpoint:    d.SetEndpoint,
+			Manifest:       d.Manifest,
+			SetManifest:    d.SetManifest,
+		}
+		res := tool.Run(ctx, rawParams, env)
+		return finalize(diag, start, 0, res)
+	}
+
 	sess := d.Sessions.Get(req.SessionID)
 	if d.Ephemeral {
 		defer d.Sessions.Drop(req.SessionID)
@@ -110,7 +137,10 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 
 	rtStart := conn.RoundTrips()
 
-	env := buildRunEnv(sess, conn, &diag)
+	env := buildRunEnv(sess, conn, &diag, d.AllowDangerous, d.Manifest)
+	env.SetEndpoint = d.SetEndpoint
+	env.Manifest = d.Manifest
+	env.SetManifest = d.SetManifest
 	res := tool.Run(ctx, rawParams, env)
 
 	return finalize(diag, start, conn.RoundTrips()-rtStart, res)
@@ -140,14 +170,32 @@ func MarshalEnvelope(env Envelope) ([]byte, error) {
 // repeat calls with the same selector skip Target.getTargets and
 // Target.attachToTarget — manifesting as the CDPRoundTrips drop the Phase 5
 // deliverable expects.
-func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics) *RunEnv {
+func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics, allowDangerous bool, manifest func() *addin.Manifest) *RunEnv {
 	return &RunEnv{
 		Diag: diag,
 		Conn: func(_ context.Context) (*cdp.Connection, error) {
 			return conn, nil
 		},
+		EnsureEnabled: func(ctx context.Context, cdpSID, domain string) error {
+			return sess.EnsureEnabled(ctx, conn, cdpSID, domain)
+		},
+		AllowDangerous: allowDangerous,
 		Attach: func(ctx context.Context, sel TargetSelector) (*AttachedTarget, error) {
-			if cached, ok := sess.Selected(sel.TargetID, sel.URLPattern); ok {
+			// Empty selector: prefer the sticky default installed by
+			// pages.select. Falls through to FirstPageTarget when unset.
+			if sel.TargetID == "" && sel.URLPattern == "" && sel.Surface == "" && sel.AddinID == "" {
+				if def, ok := sess.DefaultSelection(); ok {
+					diag.TargetID = def.Target.TargetID
+					diag.CDPSessionID = def.SessionID
+					return &AttachedTarget{
+						Conn:      conn,
+						Target:    def.Target,
+						SessionID: def.SessionID,
+					}, nil
+				}
+			}
+			key := selectorCacheKey(sel)
+			if cached, ok := sess.Selected(sel.TargetID, key); ok {
 				diag.TargetID = cached.Target.TargetID
 				diag.CDPSessionID = cached.SessionID
 				return &AttachedTarget{
@@ -156,7 +204,11 @@ func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics)
 					SessionID: cached.SessionID,
 				}, nil
 			}
-			target, err := ResolveTarget(ctx, conn, sel)
+			var m *addin.Manifest
+			if manifest != nil {
+				m = manifest()
+			}
+			target, err := ResolveTarget(ctx, conn, sel, m)
 			if err != nil {
 				return nil, err
 			}
@@ -166,12 +218,44 @@ func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics)
 				return nil, err
 			}
 			diag.CDPSessionID = cdpSID
-			sess.SetSelected(sel.TargetID, sel.URLPattern, target, cdpSID)
+			sess.SetSelected(sel.TargetID, key, target, cdpSID)
 			return &AttachedTarget{
 				Conn:      conn,
 				Target:    target,
 				SessionID: cdpSID,
 			}, nil
 		},
+		SetDefaultSelection: func(target cdp.TargetInfo, cdpSID string) {
+			sess.SetDefaultSelection(target, cdpSID)
+		},
+		ClearDefaultSelection: func() {
+			sess.ClearDefaultSelection()
+		},
+		Snapshot: func() *session.Snapshot {
+			return sess.Snapshot()
+		},
+		SetSnapshot: func(snap *session.Snapshot) {
+			sess.SetSnapshot(snap)
+		},
+		EventBuf: func(kind session.EventBufKind, cdpSID string, maxBuffer int) *session.EventBuf {
+			return sess.EventBuf(kind, cdpSID, maxBuffer)
+		},
+		MarkEventPumping: func(kind session.EventBufKind, cdpSID string, maxBuffer int) bool {
+			return sess.MarkEventPumping(kind, cdpSID, maxBuffer)
+		},
 	}
+}
+
+// selectorCacheKey collapses the non-TargetID portions of a selector into a
+// stable string used as the URL-pattern cache key. Surface- and add-in-id
+// selectors thus get their own cache slot rather than colliding with a bare
+// URL-pattern selector.
+func selectorCacheKey(sel TargetSelector) string {
+	if sel.URLPattern != "" {
+		return sel.URLPattern
+	}
+	if sel.Surface == "" && sel.AddinID == "" {
+		return ""
+	}
+	return "surface=" + string(sel.Surface) + "|addin=" + sel.AddinID
 }

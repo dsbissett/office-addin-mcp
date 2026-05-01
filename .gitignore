@@ -12,6 +12,13 @@
 .vscode/
 *.swp
 
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Planning docs
+docs/*-plan.md
+
 # Coverage
 coverage.out
 coverage.html

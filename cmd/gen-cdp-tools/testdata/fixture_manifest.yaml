@@ -1,0 +1,12 @@
+version: 1
+defaults:
+  toolPrefix: cdp
+  scope: target
+  dangerous: false
+domains:
+  Test:
+    scope: target
+    autoEnable: true
+    methods:
+      ping: {}
+      draw: {}

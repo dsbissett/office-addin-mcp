@@ -250,3 +250,40 @@ func TestManager_DropClosesSession(t *testing.T) {
 		t.Fatal("expected Drop to close the underlying connection")
 	}
 }
+
+func TestSession_DefaultSelection(t *testing.T) {
+	s := &Session{id: "default", cfg: Config{}.withDefaults()}
+	if _, ok := s.DefaultSelection(); ok {
+		t.Fatal("default selection should be empty initially")
+	}
+	target := cdp.TargetInfo{TargetID: "T1", Type: "page", URL: "https://app/"}
+	s.SetDefaultSelection(target, "cdp-1")
+	got, ok := s.DefaultSelection()
+	if !ok {
+		t.Fatal("expected default selection after SetDefaultSelection")
+	}
+	if got.Target.TargetID != "T1" || got.SessionID != "cdp-1" {
+		t.Errorf("got %+v", got)
+	}
+	s.ClearDefaultSelection()
+	if _, ok := s.DefaultSelection(); ok {
+		t.Error("ClearDefaultSelection should reset")
+	}
+}
+
+func TestSession_SnapshotCache(t *testing.T) {
+	s := &Session{id: "default", cfg: Config{}.withDefaults()}
+	if s.Snapshot() != nil {
+		t.Fatal("snapshot should start nil")
+	}
+	snap := &Snapshot{
+		TargetID:     "T1",
+		CDPSessionID: "S1",
+		Nodes:        map[string]SnapshotNode{"uid-1": {UID: "uid-1", BackendNodeID: 7}},
+	}
+	s.SetSnapshot(snap)
+	got := s.Snapshot()
+	if got == nil || got.Nodes["uid-1"].BackendNodeID != 7 {
+		t.Fatalf("snapshot lookup failed: %+v", got)
+	}
+}

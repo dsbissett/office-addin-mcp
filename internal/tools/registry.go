@@ -18,6 +18,12 @@ type Tool struct {
 	Schema      json.RawMessage
 	Run         func(ctx context.Context, params json.RawMessage, env *RunEnv) Result
 
+	// NoSession marks lifecycle tools (addin.detect, addin.launch, addin.stop)
+	// that do not need a live CDP connection. The dispatcher skips session
+	// acquisition for these, so they run even when no WebView2 is available
+	// yet — which is the whole point of addin.launch.
+	NoSession bool
+
 	compiled *jsonschema.Schema
 }
 

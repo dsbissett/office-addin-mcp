@@ -20,6 +20,11 @@ const targetSelectorBase = `
     "urlPattern": {"type": "string", "description": "Substring of the target URL (e.g. add-in taskpane URL)."}
 `
 
+// maxCells is the Phase 5 read-truncation cap. Range-reading payloads return
+// only the top-left cell of any range whose total cell count exceeds this and
+// flag truncated=true; mirrors the reference excel-webview2-mcp behavior.
+const maxCells = 1000
+
 // runPayload is the shared scaffolding every excel.* tool calls. The
 // dispatcher hands us a connection (one-shot or session-pooled) and an
 // AttachedTarget; we run the named payload through the Office.js executor

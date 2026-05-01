@@ -1,0 +1,13 @@
+source: https://github.com/ChromeDevTools/devtools-protocol
+sha: 470fb6a42cbcaf446b516d8fc7738f9723cba5fc
+roll: r1621552
+date: 2026-04-28
+files:
+  - browser_protocol.json
+  - js_protocol.json
+
+To refresh, run:
+  SHA=<commit-sha>
+  curl -fsSL https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/$SHA/json/browser_protocol.json -o cdp/protocol/browser_protocol.json
+  curl -fsSL https://raw.githubusercontent.com/ChromeDevTools/devtools-protocol/$SHA/json/js_protocol.json     -o cdp/protocol/js_protocol.json
+Then update sha/roll/date above, regenerate (P2+), and treat as a breaking change per docs/migration-notes.md.

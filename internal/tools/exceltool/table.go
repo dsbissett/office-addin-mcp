@@ -55,3 +55,120 @@ func runCreateTable(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	}
 	return runPayload(ctx, env, p.selector(), "excel.createTable", args)
 }
+
+const listTablesSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "excel.listTables parameters",
+  "type": "object",
+  "properties": {` + targetSelectorBase + `},
+  "additionalProperties": false
+}`
+
+// ListTables returns the excel.listTables tool definition.
+func ListTables() tools.Tool {
+	return tools.Tool{
+		Name:        "excel.listTables",
+		Description: "List all tables (ListObjects) in the workbook with name, worksheet, address, header/total flags, row count, and style.",
+		Schema:      json.RawMessage(listTablesSchema),
+		Run:         runListTables,
+	}
+}
+
+func runListTables(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Result {
+	var p emptySelectorParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
+	}
+	return runPayload(ctx, env, p.selector(), "excel.listTables", map[string]any{})
+}
+
+const namedTableSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "named table parameters",
+  "type": "object",
+  "properties": {
+    "name": {"type": "string", "minLength": 1, "description": "Table name (ListObject name)."},` + targetSelectorBase + `},
+  "required": ["name"],
+  "additionalProperties": false
+}`
+
+type namedTableParams struct {
+	Name string `json:"name"`
+	selectorFields
+}
+
+// TableInfo returns the excel.tableInfo tool definition.
+func TableInfo() tools.Tool {
+	return tools.Tool{
+		Name:        "excel.tableInfo",
+		Description: "Detail for a single table: name, worksheet, address, row count, columns (name + filter criteria), header/total flags, and style.",
+		Schema:      json.RawMessage(namedTableSchema),
+		Run:         runTableInfo,
+	}
+}
+
+func runTableInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Result {
+	var p namedTableParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
+	}
+	return runPayload(ctx, env, p.selector(), "excel.tableInfo", map[string]any{"name": p.Name})
+}
+
+const tableRowsSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "excel.tableRows parameters",
+  "type": "object",
+  "properties": {
+    "name":           {"type": "string", "minLength": 1, "description": "Table name (ListObject name)."},
+    "includeHeaders": {"type": "boolean", "description": "Include the header row names."},` + targetSelectorBase + `},
+  "required": ["name"],
+  "additionalProperties": false
+}`
+
+type tableRowsParams struct {
+	Name           string `json:"name"`
+	IncludeHeaders bool   `json:"includeHeaders,omitempty"`
+	selectorFields
+}
+
+// TableRows returns the excel.tableRows tool definition.
+func TableRows() tools.Tool {
+	return tools.Tool{
+		Name:        "excel.tableRows",
+		Description: "Data-body values of a table, truncated when row*column exceeds the cell cap.",
+		Schema:      json.RawMessage(tableRowsSchema),
+		Run:         runTableRows,
+	}
+}
+
+func runTableRows(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Result {
+	var p tableRowsParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
+	}
+	args := map[string]any{
+		"name":           p.Name,
+		"includeHeaders": p.IncludeHeaders,
+		"maxCells":       maxCells,
+	}
+	return runPayload(ctx, env, p.selector(), "excel.tableRows", args)
+}
+
+// TableFilters returns the excel.tableFilters tool definition.
+func TableFilters() tools.Tool {
+	return tools.Tool{
+		Name:        "excel.tableFilters",
+		Description: "Active filter criteria per column for a table. Columns without an active filter have null criteria.",
+		Schema:      json.RawMessage(namedTableSchema),
+		Run:         runTableFilters,
+	}
+}
+
+func runTableFilters(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Result {
+	var p namedTableParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
+	}
+	return runPayload(ctx, env, p.selector(), "excel.tableFilters", map[string]any{"name": p.Name})
+}

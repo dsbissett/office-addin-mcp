@@ -62,6 +62,28 @@ function __requireSet(name, version) {
   }
 }
 
+function __resolveRange(context, address, sheet) {
+  if (!address) {
+    return context.workbook.getSelectedRange();
+  }
+  let sheetName = sheet;
+  let a1 = address;
+  const bangIdx = address.indexOf('!');
+  if (bangIdx >= 0) {
+    sheetName = address.slice(0, bangIdx).replace(/^'|'$/g, '');
+    a1 = address.slice(bangIdx + 1);
+  }
+  const ws = sheetName
+    ? context.workbook.worksheets.getItem(sheetName)
+    : context.workbook.worksheets.getActiveWorksheet();
+  return ws.getRange(a1);
+}
+
+function __sliceGrid(values, truncated) {
+  if (!truncated || !Array.isArray(values)) return values;
+  return values.slice(0, 1).map((row) => (Array.isArray(row) ? row.slice(0, 1) : row));
+}
+
 async function __runExcel(fn) {
   await __ensureOffice();
   try {

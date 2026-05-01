@@ -97,5 +97,7 @@ func TestEvaluateRoutesSessionID(t *testing.T) {
 }
 
 // keep the linter happy if upstream gorilla/websocket changes
-var _ = http.StatusOK
-var _ = time.Second
+var (
+	_ = http.StatusOK
+	_ = time.Second
+)

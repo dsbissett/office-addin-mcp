@@ -106,9 +106,14 @@ func (c *Connection) closeWithErr(err error) {
 	for _, ch := range pending {
 		close(ch)
 	}
+	closed := make(map[chan Event]struct{}, len(subs))
 	for _, list := range subs {
 		for _, ch := range list {
+			if _, done := closed[ch]; done {
+				continue
+			}
 			close(ch)
+			closed[ch] = struct{}{}
 		}
 	}
 }
@@ -151,6 +156,48 @@ func (c *Connection) readLoop() {
 			}
 		}
 	}
+}
+
+// SubscribeMethods is the multi-method form of Subscribe: one channel that
+// receives events for every method in the list, in the order the read loop
+// observes them. Useful when downstream correlation depends on cross-method
+// ordering (e.g. Network.requestWillBeSent before Network.responseReceived
+// for the same requestId). The returned cancel removes the subscription
+// from every method.
+func (c *Connection) SubscribeMethods(methods []string, buffer int) (<-chan Event, func()) {
+	ch := make(chan Event, buffer)
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		close(ch)
+		return ch, func() {}
+	}
+	for _, m := range methods {
+		c.subs[m] = append(c.subs[m], ch)
+	}
+	c.mu.Unlock()
+	cancel := func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.closed {
+			return
+		}
+		closed := false
+		for _, m := range methods {
+			list := c.subs[m]
+			for i, s := range list {
+				if s == ch {
+					c.subs[m] = append(list[:i], list[i+1:]...)
+					if !closed {
+						close(ch)
+						closed = true
+					}
+					break
+				}
+			}
+		}
+	}
+	return ch, cancel
 }
 
 // Subscribe returns a channel for events of the given method. The returned

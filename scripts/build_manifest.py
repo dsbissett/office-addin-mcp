@@ -1,0 +1,191 @@
+#!/usr/bin/env python3
+"""
+build_manifest.py — emit cdp/manifest.yaml from CdpProtocols.md + browser/js protocol JSON.
+
+Run from the repo root:
+
+    python scripts/build_manifest.py > cdp/manifest.yaml
+
+The script:
+  1. Parses CdpProtocols.md to harvest every "Domain.method" reference, deduped.
+  2. Drops dispatcher-managed methods: <Domain>.enable / .disable, plus the
+     Target lifecycle plumbing the dispatcher owns (attachToTarget, setAutoAttach,
+     detachFromTarget).
+  3. Cross-checks each method against cdp/protocol/{browser,js}_protocol.json;
+     prints unresolved entries to stderr and skips them.
+  4. Emits a YAML manifest with:
+       - scope: browser | target  (hand-curated allowlist; default target)
+       - autoEnable: true on domains the dispatcher must lazy-enable
+       - dangerous / binaryField: hand-curated annotations
+  5. Output is sorted by domain then by method for byte-stable runs.
+
+The hand-curated tables below (DANGEROUS, BINARY_FIELD, BROWSER_SCOPED) are the
+only places policy lives. CdpProtocols.md decides allowlist membership; the JSON
+files decide schemas. Re-run this script when any of those change.
+"""
+
+import json
+import re
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parents[1]
+
+PROTO_FILES = [
+    REPO / "cdp" / "protocol" / "browser_protocol.json",
+    REPO / "cdp" / "protocol" / "js_protocol.json",
+]
+ALLOWLIST_FILE = REPO / "CdpProtocols.md"
+
+# Methods the dispatcher manages; never expose as user-facing tools.
+EXCLUDE_METHODS = {
+    "Target.attachToTarget",
+    "Target.setAutoAttach",
+    "Target.detachFromTarget",
+    "Target.autoAttachRelated",
+    "Target.attachToBrowserTarget",
+    "Target.exposeDevToolsProtocol",
+    "Target.sendMessageToTarget",
+}
+
+# Auto-enable: domains where the dispatcher must issue "<Domain>.enable" before
+# a method runs. The generator emits env.EnsureEnabled(...) calls for these.
+AUTO_ENABLE_DOMAINS = {
+    "Page", "Runtime", "DOM", "CSS", "Network", "Fetch",
+    "Debugger", "Animation", "WebAuthn", "Accessibility",
+}
+
+# Browser-scoped: tools that target the browser process, not a specific page.
+# Defaults to "target". The generator skips env.Attach for these.
+BROWSER_SCOPED_DOMAINS = {
+    "Browser",
+    "Target",
+    "BackgroundService",
+    "Storage",
+    "CacheStorage",
+}
+
+# Methods marked dangerous: refused unless --allow-dangerous-cdp is set.
+DANGEROUS = {
+    "Browser.crash",
+    "Browser.crashGpuProcess",
+    "Browser.close",
+    "Browser.executeBrowserCommand",
+    "Page.crash",
+    "Runtime.terminateExecution",
+    "Debugger.pause",
+    "Network.clearBrowserCache",
+    "Network.clearBrowserCookies",
+    "Storage.clearCookies",
+    "Storage.clearDataForOrigin",
+    "Storage.clearDataForStorageKey",
+}
+
+# Methods whose result has a base64-encoded binary payload that can be written
+# to disk via the optional outputPath param. Value is (fieldName, mimeType).
+# captureScreenshot can technically be jpeg/webp via the format param, but
+# image/png is the default and we don't currently re-route mime by request.
+BINARY_FIELD = {
+    "Page.captureScreenshot": ("data", "image/png"),
+    "Page.printToPDF":        ("data", "application/pdf"),
+    "Page.captureSnapshot":   ("data", "multipart/related"),
+}
+
+METHOD_RE = re.compile(r"^([A-Z][A-Za-z]+)\.([a-zA-Z][A-Za-z0-9]*)\b")
+
+
+def load_protocol_index():
+    """Returns {Domain.method: True} for every command in the vendored JSON."""
+    out = {}
+    for p in PROTO_FILES:
+        with p.open() as f:
+            data = json.load(f)
+        for dom in data.get("domains", []):
+            d = dom["domain"]
+            for cmd in dom.get("commands", []):
+                out[f"{d}.{cmd['name']}"] = True
+    return out
+
+
+def load_allowlist():
+    """Returns ordered list of Domain.method strings harvested from CdpProtocols.md."""
+    seen = set()
+    ordered = []
+    for line in ALLOWLIST_FILE.read_text().splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line:
+            continue
+        m = METHOD_RE.match(line)
+        if not m:
+            continue
+        key = f"{m.group(1)}.{m.group(2)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(key)
+    return ordered
+
+
+def main():
+    proto = load_protocol_index()
+    methods = load_allowlist()
+
+    by_domain = {}
+    missing = []
+    for fq in methods:
+        if fq in EXCLUDE_METHODS:
+            continue
+        d, m = fq.split(".", 1)
+        if m in ("enable", "disable"):
+            continue
+        if fq not in proto:
+            missing.append(fq)
+            continue
+        by_domain.setdefault(d, []).append(m)
+
+    if missing:
+        print(f"# WARNING: {len(missing)} methods not found in protocol JSON:", file=sys.stderr)
+        for fq in missing:
+            print(f"#   {fq}", file=sys.stderr)
+
+    out = []
+    out.append("# cdp/manifest.yaml -- generated by scripts/build_manifest.py.")
+    out.append("# Edit DANGEROUS / BINARY_FIELD / BROWSER_SCOPED_DOMAINS / AUTO_ENABLE_DOMAINS")
+    out.append("# in scripts/build_manifest.py and re-run; do NOT hand-edit method entries here.")
+    out.append("# Methods absent from this manifest are not exposed as tools.")
+    out.append("version: 1")
+    out.append("")
+    out.append("defaults:")
+    out.append("  toolPrefix: cdp")
+    out.append("  scope: target")
+    out.append("  dangerous: false")
+    out.append("")
+    out.append("domains:")
+
+    for d in sorted(by_domain):
+        scope = "browser" if d in BROWSER_SCOPED_DOMAINS else "target"
+        out.append(f"  {d}:")
+        out.append(f"    scope: {scope}")
+        if d in AUTO_ENABLE_DOMAINS:
+            out.append("    autoEnable: true")
+        out.append("    methods:")
+        for m in sorted(by_domain[d]):
+            fq = f"{d}.{m}"
+            entries = []
+            if fq in DANGEROUS:
+                entries.append("dangerous: true")
+            if fq in BINARY_FIELD:
+                field, mime = BINARY_FIELD[fq]
+                entries.append(f"binaryField: {field}")
+                entries.append(f"binaryMimeType: {mime}")
+            if entries:
+                out.append(f"      {m}: {{ {', '.join(entries)} }}")
+            else:
+                out.append(f"      {m}: {{}}")
+        out.append("")
+
+    sys.stdout.write("\n".join(out).rstrip() + "\n")
+
+
+if __name__ == "__main__":
+    main()

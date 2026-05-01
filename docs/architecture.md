@@ -8,24 +8,45 @@ on-the-wire envelope, see [tool-contracts.md](tool-contracts.md).
 
 ```
 cmd/office-addin-mcp/main.go         — flag parse, dispatch to subcommand
+cmd/gen-cdp-tools/                   — code generator: manifest+protocol → Go tools
+  main.go        CLI: -manifest -browser -js -out -docs
+  manifest.go    YAML loader (cdp/manifest.yaml)
+  protocol.go    browser_protocol.json / js_protocol.json loader
+  schema.go      CDP type → JSON Schema, $ref resolution, selector/outputPath fields
+  template.go    text/template-driven Go rendering (gofmt in-process)
+  golden_test.go fixture-based golden + determinism tests
+  drift_test.go  re-runs against live manifest; fails if checked-in output drifts
+
+cdp/                                 — vendored protocol + policy overlay
+  manifest.yaml              policy: allowlist, scope, autoEnable, dangerous, binaryField
+  protocol/browser_protocol.json     vendored Chrome devtools-protocol JSON
+  protocol/js_protocol.json          vendored js_protocol JSON
+  protocol/VERSION                   pinned upstream SHA + refresh recipe
+  protocol_test.go                   sanity test: parses, skeleton domains present
+scripts/build_manifest.py            regenerates manifest.yaml from CdpProtocols.md
 
 internal/cli/                        — call, list-tools, daemon, serve
   call.go        flag parse, daemon autoroute, in-process fallthrough
   list_tools.go  list registered tools as JSON
   daemon.go      run the persistent TCP server (foreground)
   serve.go       --stdio: newline-delimited JSON in/out
+  dangerous.go   shared --allow-dangerous-cdp flag + OAMCP_ALLOW_DANGEROUS_CDP env
   registry.go    DefaultRegistry — wires tool packages
 
 internal/tools/                      — registry, dispatcher, envelope
   registry.go    Tool, Registry; schemas compiled at registration
-  dispatcher.go  Dispatcher{Registry, Sessions} — validate → run → finalize
+  dispatcher.go  Dispatcher{Registry, Sessions, AllowDangerous} — validate → run → finalize
   result.go      Envelope, EnvelopeError, Diagnostics, EnvelopeVersion
-  runtime.go     Request, Result, RunEnv (Conn / Attach helpers)
+  runtime.go     Request, Result, RunEnv (Conn / Attach / EnsureEnabled / AllowDangerous)
+  binary.go      WriteBinaryFieldOutput — base64 → disk for binary tools
   schema.go      JSON Schema validation (santhosh-tekuri/jsonschema/v5)
   target.go      ResolveTarget, IsInternalURL
-  cdptool/       cdp.evaluate, cdp.getTargets, cdp.selectTarget
-  browsertool/   browser.navigate
-  exceltool/     11 excel.* tools — Office.js payloads via officejs
+  cdptool/       Register: cdp.selectTarget primer + generated.RegisterGenerated
+                 for ~411 tools. Gated by --expose-raw-cdp; the default registry
+                 omits this package.
+    generated/   one Go file per CDP domain (accessibility.go … webauthn.go);
+                 emitted by gen-cdp-tools, byte-identical across runs
+  exceltool/     37 excel.* tools — Office.js payloads via officejs
 
 internal/session/                    — Phase-5 session pool
   session.go     Session: lock + conn + reconnect budget + selector cache
@@ -43,7 +64,7 @@ internal/officejs/                   — Office.js execution
 internal/js/                         — embedded *.js sources
   embed.go       //go:embed all:*.js
   _preamble.js   __officeError, __ensureOffice, __requireSet, __runExcel
-  excel_*.js     11 payload files; one per excel.* tool
+  excel_*.js     payload file per excel.* tool (one-to-one with tool name)
 
 internal/cdp/                        — CDP WebSocket protocol
   connection.go  ws dial, message pump, request/response correlation,
@@ -96,18 +117,33 @@ helpers do the right thing for either mode:
 ```go
 type RunEnv struct {
     Diag *Diagnostics
-    Conn   func(ctx) (*cdp.Connection, error)
-    Attach func(ctx, TargetSelector) (*AttachedTarget, error)
+    Conn           func(ctx) (*cdp.Connection, error)
+    Attach         func(ctx, TargetSelector) (*AttachedTarget, error)
+    EnsureEnabled  func(ctx, cdpSessionID, domain string) error
+    AllowDangerous bool
 }
 ```
 
-- `Conn` is for tools that don't need to attach (`cdp.getTargets`).
+- `Conn` is for tools that don't need to attach (`cdp.target.getTargets`,
+  `cdp.browser.getVersion`).
 - `Attach` resolves a target and attaches via flatten sessions; in
   daemon mode it consults the session's **selector cache** so repeat
   calls with the same `(targetId, urlPattern)` skip both
-  `Target.getTargets` and `Target.attachToTarget`. This is the signal
-  the Phase 5 deliverable verifies — `diagnostics.cdpRoundTrips` drops
+  `Target.getTargets` and `Target.attachToTarget`. The daemon
+  acceptance test verifies this — `diagnostics.cdpRoundTrips` drops
   from ~3 to 1 after the first call.
+- `EnsureEnabled` issues `<Domain>.enable` exactly once per
+  `(cdpSessionID, domain)` pair on the active session. Generated
+  CDP tools call this before the first command on any auto-enable
+  domain (Page, Runtime, DOM, CSS, Network, Fetch, Debugger,
+  Animation, WebAuthn, Accessibility). The bookkeeping clears on
+  reconnect — Chrome resets domain state across connections, and
+  `Session.dropConnLocked` follows.
+- `AllowDangerous` is the per-process gate fed by
+  `--allow-dangerous-cdp` / `OAMCP_ALLOW_DANGEROUS_CDP`. Generated
+  tools whose manifest entry has `dangerous: true` (Browser.crash,
+  Runtime.terminateExecution, etc.) refuse with
+  `category=unsupported, code=dangerous_disabled` when this is false.
 
 `AttachedTarget` is a value (no Close method); the dispatcher owns the
 underlying connection.
@@ -181,6 +217,58 @@ The result envelope from the JS side is exactly two shapes:
 The Go executor unwraps the first into the tool's `data`, the second
 into a `category=office_js` envelope error with `debugInfo` tucked into
 `error.details`.
+
+## Code generation — where the ~411 cdp.* tools come from
+
+Two artifacts are the source of truth:
+
+1. **Vendored protocol JSON** — `cdp/protocol/{browser,js}_protocol.json`,
+   pinned to the SHA recorded in `cdp/protocol/VERSION`. These are the
+   parameter schemas, type definitions, and descriptions Chrome publishes.
+2. **Manifest** — `cdp/manifest.yaml`, regenerated by
+   `scripts/build_manifest.py`. Carries policy only: which methods to
+   expose, scope (browser vs target), autoEnable per-domain, plus
+   `dangerous`/`binaryField`/`binaryMimeType` annotations.
+
+`go generate ./...` (declared in
+[`internal/tools/cdptool/generated/doc.go`](../internal/tools/cdptool/generated/doc.go))
+runs `cmd/gen-cdp-tools` which:
+
+1. Loads the manifest and the two protocol JSON files.
+2. For every manifest method, derives a JSON Schema by walking
+   `parameters` and resolving `$ref`s against the protocol's
+   `domain.types` (cross-domain via `Domain.Type`).
+3. Renders one Go file per CDP domain (`internal/tools/cdptool/generated/<domain>.go`)
+   with: a schema constant, a params struct, an exported
+   `New<Domain><Method>` factory, and an unexported `run<Domain><Method>`
+   function. Target-scoped tools project params into a CDP-only struct
+   (no selectors / outputPath). Auto-enable domains emit
+   `env.EnsureEnabled` before the first command. Dangerous methods
+   prepend the `env.AllowDangerous` guard. Binary-field methods append
+   the `outputPath` branch.
+4. Emits `register_generated.go` aggregating each domain's
+   `Register<Domain>(r)` into one `RegisterGenerated(r)`.
+5. Emits `docs/cdp-tools.md` — a domain-grouped index.
+
+### Determinism
+
+Every map iteration sorts keys; `go/format` runs in-process; output is
+byte-stable across runs. `cmd/gen-cdp-tools/drift_test.go` re-runs the
+generator against the live manifest into a tempdir and byte-compares to
+the checked-in copies — it's the test-suite equivalent of
+`go generate ./... && git diff --exit-code`.
+
+### What's *not* generated
+
+- `cdp.selectTarget` stays hand-written — no CDP equivalent exists; it
+  primes the per-session selector cache. Like the rest of the `cdp.*`
+  surface it is hidden by default and only registered with
+  `--expose-raw-cdp`.
+- The legacy aliases `cdp.evaluate`, `cdp.getTargets`, and
+  `browser.navigate` were removed in Phase 6. Use the high-level
+  replacements (`page.evaluate`, `pages.list`, `page.navigate`) or, if
+  raw CDP is needed, `cdp.runtime.evaluate` / `cdp.target.getTargets` /
+  `cdp.page.navigate` under `--expose-raw-cdp`.
 
 ## What lives where (rules of thumb)
 

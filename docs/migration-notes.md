@@ -26,10 +26,10 @@ The Go binary is a redesign informed by that repo, not a port:
 
 | TS tool                       | Go tool                       | Status   | Notes                                                          |
 | ----------------------------- | ----------------------------- | -------- | -------------------------------------------------------------- |
-| `cdp_evaluate`                | `cdp.evaluate`                | ported   | Adds `targetId` / `urlPattern` selectors; envelope-uniform.    |
-| `cdp_get_targets`             | `cdp.getTargets`              | ported   | `type` / `urlPattern` / `includeInternal` filters.             |
-| `cdp_select_target`           | `cdp.selectTarget`            | ported   | Primes the session selector cache in daemon mode.              |
-| `browser_navigate`            | `browser.navigate`            | ported   | Surfaces `errorText` as `category=protocol`.                   |
+| `cdp_evaluate`                | `page.evaluate`               | ported, **renamed** | Replaces the removed `cdp.evaluate` deprecation alias. For raw access use `cdp.runtime.evaluate` under `--expose-raw-cdp`. |
+| `cdp_get_targets`             | `pages.list`                  | ported, **renamed** | Replaces the removed `cdp.getTargets` deprecation alias. For raw access use `cdp.target.getTargets` under `--expose-raw-cdp`. |
+| `cdp_select_target`           | `cdp.selectTarget`            | ported, **gated** | Primes the per-session selector cache. Now hidden behind `--expose-raw-cdp`; high-level callers should use `pages.select`. |
+| `browser_navigate`            | `page.navigate`               | ported, **renamed** | Replaces the removed `browser.navigate` deprecation alias. For raw access use `cdp.page.navigate` under `--expose-raw-cdp`. |
 | `excel_read_range`            | `excel.readRange`             | ported   |                                                                |
 | `excel_write_range`           | `excel.writeRange`            | ported   | `anyOf` requires `values` / `formulas` / `numberFormat`.       |
 | `excel_list_worksheets`       | `excel.listWorksheets`        | ported   |                                                                |
@@ -114,6 +114,56 @@ sheet named `Hidden` set to `visibility: hidden`.
 For the daemon-mode acceptance ("ten calls, one attach"), see
 [PLAN.md](../PLAN.md) §7 Phase 5 — automated coverage via
 `internal/daemon/server_test.go::TestDaemon_TenCallsReuseOneConnection`.
+
+## CDP tool generation (post-v0.1)
+
+Beyond the TS parity surface above, the Go binary now ships ~411
+code-generated CDP tools across 18 domains. These have no TS analogue —
+the TS server only re-exposed Chrome DevTools tools through chromedp,
+not the raw protocol. See [tool-contracts.md](tool-contracts.md) and
+[cdp-tools.md](cdp-tools.md) for the full surface.
+
+The generator is driven by:
+
+- `cdp/protocol/{browser,js}_protocol.json` — Chrome's vendored protocol
+  JSON, pinned to the SHA in `cdp/protocol/VERSION`.
+- `cdp/manifest.yaml` — policy overlay (allowlist, scope, autoEnable,
+  dangerous, binaryField/MimeType).
+- `cmd/gen-cdp-tools` — `go generate ./...` entry point.
+
+### Refreshing the protocol
+
+Refreshing the vendored JSON is a **breaking change at the result-shape
+boundary**. Each generated tool's `data` is a passthrough of Chrome's
+response, so a Chrome-side rename or type change propagates to callers.
+When rolling:
+
+1. Update `cdp/protocol/{browser,js}_protocol.json` to the new SHA.
+2. Update the SHA / roll number / date in `cdp/protocol/VERSION` and
+   the matching constant in `cdp/protocol_test.go::TestVersionFile`.
+3. `python scripts/build_manifest.py > cdp/manifest.yaml` to drop
+   methods Chrome removed and pick up newly added ones.
+4. `go generate ./...` to regenerate the Go files and
+   `docs/cdp-tools.md`.
+5. `go test ./...` — drift test will fail if step 4 was forgotten;
+   schema-compile failures will surface if any generated schema is
+   malformed; daemon acceptance test still asserts steady-state
+   `cdpRoundTrips=1`.
+6. Note the roll in this file's "## CDP tool generation" section as a
+   protocol-version entry, and add a CHANGELOG entry under the
+   appropriate version.
+
+### Legacy alias removal (Phase 6)
+
+`cdp.evaluate`, `cdp.getTargets`, and `browser.navigate` were removed
+in the Phase 6 cutover. The high-level replacements are
+`page.evaluate`, `pages.list`, and `page.navigate` respectively. Power
+users who want the raw Chrome DevTools surface can run with
+`--expose-raw-cdp` (or `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP=1`) and call
+`cdp.runtime.evaluate`, `cdp.target.getTargets`, and `cdp.page.navigate`
+directly. The hand-written `cdp.selectTarget` primer is still available
+under the same flag for callers that depend on the per-session
+selector cache.
 
 ## Known divergences from TS
 

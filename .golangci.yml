@@ -1,16 +1,36 @@
+version: "2"
+
 run:
   timeout: 5m
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
-    - gofumpt
     - govet
     - ineffassign
     - staticcheck
     - unused
+  settings:
+    errcheck:
+      # Best-effort writers (stderr/stdout/log). errcheck flagging every
+      # fmt.Fprintln to stderr is noise — the cost of a partial write to a
+      # CLI/log writer is negligible and we have no recovery to do.
+      exclude-functions:
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Println
+        - fmt.Printf
+        # Close on io.ReadClosers / network conns / file handles in defer
+        # paths — universally idiomatic to ignore.
+        - (io.Closer).Close
+        - (*github.com/gorilla/websocket.Conn).Close
+        - (*github.com/dsbissett/office-addin-mcp/internal/cdp.Connection).Close
+        - (*github.com/dsbissett/office-addin-mcp/internal/daemon.Server).Stop
+  exclusions:
+    paths:
+      - testdata
 
-issues:
-  exclude-dirs:
-    - testdata
+formatters:
+  enable:
+    - gofumpt

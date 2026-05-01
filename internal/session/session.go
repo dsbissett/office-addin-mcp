@@ -7,6 +7,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -14,6 +15,13 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
+
+// Sender is the subset of *cdp.Connection that EnsureEnabled needs. Defined
+// as an interface so tests can inject a recording stub without a live
+// WebSocket. *cdp.Connection satisfies this naturally.
+type Sender interface {
+	Send(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error)
+}
 
 // Config tunes session lifetime and reconnect behavior.
 type Config struct {
@@ -64,6 +72,48 @@ type Session struct {
 
 	hasSelection bool
 	selection    Selection
+
+	// hasDefault and defaultSel track the page selection installed by
+	// pages.select. Empty-selector Attach calls return this in preference to
+	// FirstPageTarget so the chosen page sticks across subsequent UID-based
+	// tools (page.click, page.fill, …) without repeatedly threading targetId.
+	hasDefault bool
+	defaultSel Selection
+
+	// snapshot stores the most recent page.snapshot output. UID-based
+	// interaction tools resolve uids against this map. Cleared on reconnect
+	// (dropConnLocked) since backendNodeIds are scoped to the live target.
+	snapshot *Snapshot
+
+	// enabled tracks per-CDP-session domains that have been issued
+	// "<Domain>.enable". Cleared whenever the underlying conn is dropped
+	// (dropConnLocked) — Chrome resets domain state on reconnect, so the
+	// tracking has to follow.
+	enabled map[string]map[string]struct{}
+
+	// eventBufs holds the ring buffers fed by page.consoleLog /
+	// page.networkLog pump goroutines, keyed by (kind, cdpSessionID).
+	// Cleared on dropConnLocked since both the CDP sessions and the
+	// goroutines reading them are invalidated when the socket reconnects.
+	eventBufs map[bufKey]*EventBuf
+}
+
+// SnapshotNode is one entry in a page snapshot's UID → backendNodeId table.
+type SnapshotNode struct {
+	UID           string
+	BackendNodeID int
+	Role          string
+	Name          string
+}
+
+// Snapshot is a frozen accessibility-tree projection: a stable UID per node
+// pointing back at its CDP backendNodeId, scoped to a particular target +
+// CDP flatten session. Interaction tools use it to resolve UIDs without
+// re-walking the AX tree on every call.
+type Snapshot struct {
+	TargetID     string
+	CDPSessionID string
+	Nodes        map[string]SnapshotNode
 }
 
 // ID returns the session identifier.
@@ -118,6 +168,9 @@ func (s *Session) Acquire(ctx context.Context, ep webview2.Config) (*cdp.Connect
 		s.recordReconnectLocked()
 		s.hasSelection = false
 		s.selection = Selection{}
+		s.hasDefault = false
+		s.defaultSel = Selection{}
+		s.snapshot = nil
 	}
 
 	conn := s.conn
@@ -163,6 +216,41 @@ func (s *Session) InvalidateSelection() {
 	s.selection = Selection{}
 }
 
+// SetDefaultSelection records the sticky page chosen by pages.select. Empty
+// selectors fall back to this. Must be called with the session lock held.
+func (s *Session) SetDefaultSelection(target cdp.TargetInfo, cdpSessionID string) {
+	s.hasDefault = true
+	s.defaultSel = Selection{Target: target, SessionID: cdpSessionID}
+}
+
+// DefaultSelection returns the current sticky default, if any. Must be called
+// with the session lock held.
+func (s *Session) DefaultSelection() (Selection, bool) {
+	if !s.hasDefault {
+		return Selection{}, false
+	}
+	return s.defaultSel, true
+}
+
+// ClearDefaultSelection drops the sticky default. Must be called with the
+// session lock held.
+func (s *Session) ClearDefaultSelection() {
+	s.hasDefault = false
+	s.defaultSel = Selection{}
+}
+
+// SetSnapshot stores the latest page.snapshot UID table. Must be called with
+// the session lock held.
+func (s *Session) SetSnapshot(snap *Snapshot) {
+	s.snapshot = snap
+}
+
+// Snapshot returns the cached snapshot, or nil. Must be called with the
+// session lock held.
+func (s *Session) Snapshot() *Snapshot {
+	return s.snapshot
+}
+
 // Close terminates the session. Idempotent.
 func (s *Session) Close() {
 	s.mu.Lock()
@@ -178,6 +266,45 @@ func (s *Session) dropConnLocked() {
 	}
 	s.hasSelection = false
 	s.selection = Selection{}
+	s.hasDefault = false
+	s.defaultSel = Selection{}
+	s.snapshot = nil
+	s.enabled = nil
+	s.dropEventBufsLocked()
+}
+
+// EnsureEnabled issues "<domain>.enable" exactly once per (cdpSessionID,
+// domain) pair for this Session. Subsequent calls are no-ops until the
+// connection is dropped (e.g. by reconnect). Must be called with the
+// session lock held — i.e. between Acquire and its release.
+func (s *Session) EnsureEnabled(ctx context.Context, sender Sender, cdpSessionID, domain string) error {
+	if s.enabled == nil {
+		s.enabled = map[string]map[string]struct{}{}
+	}
+	domains := s.enabled[cdpSessionID]
+	if domains == nil {
+		domains = map[string]struct{}{}
+		s.enabled[cdpSessionID] = domains
+	}
+	if _, ok := domains[domain]; ok {
+		return nil
+	}
+	if _, err := sender.Send(ctx, cdpSessionID, domain+".enable", nil); err != nil {
+		return err
+	}
+	domains[domain] = struct{}{}
+	return nil
+}
+
+// IsEnabled reports whether (cdpSessionID, domain) has been enabled. Only
+// useful for tests and diagnostics — production paths go through EnsureEnabled.
+// Must be called with the session lock held.
+func (s *Session) IsEnabled(cdpSessionID, domain string) bool {
+	if s.enabled == nil {
+		return false
+	}
+	_, ok := s.enabled[cdpSessionID][domain]
+	return ok
 }
 
 func (s *Session) canReconnectLocked() bool {

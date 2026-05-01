@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 
+	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
+	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
 
@@ -72,6 +74,66 @@ type RunEnv struct {
 	// Target.getTargets and Target.attachToTarget — surfacing as a sharp drop
 	// in Diagnostics.CDPRoundTrips after the first call.
 	Attach func(ctx context.Context, sel TargetSelector) (*AttachedTarget, error)
+
+	// EnsureEnabled issues "<domain>.enable" once per (cdpSessionID, domain)
+	// pair for the current session. Generated CDP tools call this before
+	// their first command on any auto-enable domain (Page, Runtime, DOM,
+	// CSS, Network, Fetch, …). Re-runs only after the underlying CDP
+	// connection drops, which clears the bookkeeping.
+	EnsureEnabled func(ctx context.Context, cdpSessionID, domain string) error
+
+	// AllowDangerous gates methods marked dangerous in the manifest
+	// (Browser.crash, Runtime.terminateExecution, etc.). Set from the
+	// process-wide --allow-dangerous-cdp flag / OAMCP_ALLOW_DANGEROUS_CDP
+	// env var. When false, generated dangerous tools refuse with
+	// dangerous_disabled.
+	AllowDangerous bool
+
+	// SetEndpoint overrides the server's default CDP endpoint for subsequent
+	// tool calls. addin.launch uses this so an agent never needs to pass
+	// --browser-url after sideloading Excel. Nil-safe; tools should call
+	// only when present.
+	SetEndpoint func(webview2.Config)
+
+	// Manifest returns the parsed manifest of the active add-in launch, or
+	// nil if no manifest is loaded. Tools that classify CDP targets by
+	// surface (taskpane / dialog / cf-runtime) consult this. Always nil-safe.
+	Manifest func() *addin.Manifest
+
+	// SetManifest stores a parsed manifest at server scope. addin.launch
+	// invokes this after a successful sideload so subsequent surface-based
+	// selectors can resolve. Nil-safe.
+	SetManifest func(*addin.Manifest)
+
+	// SetDefaultSelection records the page chosen by pages.select. When
+	// installed, subsequent Attach calls with an empty selector return this
+	// page rather than FirstPageTarget. Nil in lifecycle (NoSession) tools.
+	SetDefaultSelection func(target cdp.TargetInfo, cdpSessionID string)
+
+	// ClearDefaultSelection drops the sticky default. Used by pages.close
+	// when the closed target is the active default. Nil in NoSession tools.
+	ClearDefaultSelection func()
+
+	// Snapshot returns the most recent page.snapshot output, or nil. Used by
+	// interaction tools (page.click, page.fill, …) to resolve UIDs to
+	// backendNodeIds. Nil in NoSession tools.
+	Snapshot func() *session.Snapshot
+
+	// SetSnapshot installs a fresh snapshot, clearing the previous one. Used
+	// by page.snapshot. Nil in NoSession tools.
+	SetSnapshot func(*session.Snapshot)
+
+	// EventBuf returns the get-or-create event ring for (kind, cdpSessionID),
+	// honoring the supplied maxBuffer on first access (and resizing on
+	// subsequent calls). Used by page.consoleLog / page.networkLog. Nil in
+	// NoSession tools.
+	EventBuf func(kind session.EventBufKind, cdpSessionID string, maxBuffer int) *session.EventBuf
+
+	// MarkEventPumping atomically checks whether the (kind, cdpSessionID)
+	// pump goroutine is already running and reserves the slot when it isn't.
+	// Returns true exactly once per session per (kind, cdpSessionID) — the
+	// caller is then responsible for spawning the pump. Nil in NoSession tools.
+	MarkEventPumping func(kind session.EventBufKind, cdpSessionID string, maxBuffer int) bool
 }
 
 // ClassifyCDPErr maps a low-level CDP/transport error to a uniform Result.
