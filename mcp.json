@@ -11,7 +11,7 @@
     {
       "registryType": "npm",
       "identifier": "@dsbissett/office-addin-mcp",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "transport": {
         "type": "stdio"
       }

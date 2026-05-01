@@ -1,6 +1,7 @@
 {
   "name": "@dsbissett/office-addin-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
+  "mcpName": "io.github.dsbissett/office-addin-mcp",
   "description": "MCP server for driving Office add-ins via WebView2/CDP",
   "keywords": [
     "mcp",
