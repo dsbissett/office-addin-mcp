@@ -8,12 +8,25 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
+)
+
+// Sentinel errors returned by Acquire so the dispatcher can branch with
+// errors.Is rather than substring-matching the wrapped Error() string.
+var (
+	// ErrReconnectBudgetExhausted means the session has hit the
+	// ReconnectMax-per-ReconnectWindow ceiling. The user has to wait for the
+	// window to slide before a fresh dial is permitted.
+	ErrReconnectBudgetExhausted = errors.New("session: reconnect budget exhausted")
+	// ErrDialFailed means the underlying webview2.Discover or cdp.Dial call
+	// returned an error — typically the CDP endpoint is unreachable.
+	ErrDialFailed = errors.New("session: dial failed")
 )
 
 // Sender is the subset of *cdp.Connection that EnsureEnabled needs. Defined
@@ -155,14 +168,16 @@ func (s *Session) Acquire(ctx context.Context, ep webview2.Config) (*cdp.Connect
 	if s.conn == nil {
 		if !s.canReconnectLocked() {
 			s.mu.Unlock()
-			return nil, nil, fmt.Errorf("session %q: reconnect budget exhausted (%d in %s)",
-				s.id, s.cfg.ReconnectMax, s.cfg.ReconnectWindow)
+			return nil, nil, fmt.Errorf("%w: session %q (%d in %s)",
+				ErrReconnectBudgetExhausted, s.id, s.cfg.ReconnectMax, s.cfg.ReconnectWindow)
 		}
 		conn, err := dialEndpoint(ctx, ep)
 		if err != nil {
 			s.recordReconnectLocked() // count failed attempts too — they consume budget
 			s.mu.Unlock()
-			return nil, nil, fmt.Errorf("dial: %w", err)
+			// Wrap both ErrDialFailed (so the dispatcher can branch on it) and
+			// the underlying err (so errors.Is(ctx.DeadlineExceeded) still fires).
+			return nil, nil, fmt.Errorf("%w: %w", ErrDialFailed, err)
 		}
 		s.conn = conn
 		s.recordReconnectLocked()

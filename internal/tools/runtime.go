@@ -139,6 +139,10 @@ type RunEnv struct {
 // ClassifyCDPErr maps a low-level CDP/transport error to a uniform Result.
 // Tools call this from their Run when a cdp.* call returns an error and they
 // don't have a more specific code to raise.
+//
+// When err wraps a *cdp.RemoteError, its structured {code, message, data}
+// fields are surfaced in Details["cdpError"] so an AI caller can branch on the
+// CDP-level code instead of regexing the Message.
 func ClassifyCDPErr(code string, err error) Result {
 	category := CategoryProtocol
 	retryable := false
@@ -153,6 +157,17 @@ func ClassifyCDPErr(code string, err error) Result {
 	case errors.Is(err, cdp.ErrClosed):
 		category = CategoryConnection
 		retryable = true
+	}
+	var remoteErr *cdp.RemoteError
+	if errors.As(err, &remoteErr) {
+		details := map[string]any{
+			"cdpError": map[string]any{
+				"code":    remoteErr.Code,
+				"message": remoteErr.Message,
+				"data":    remoteErr.Data,
+			},
+		}
+		return FailWithDetails(category, code, err.Error(), retryable, details)
 	}
 	return Fail(category, code, err.Error(), retryable)
 }

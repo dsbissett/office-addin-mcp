@@ -4,6 +4,110 @@
 
 ### Changed
 
+- **Actionable error envelopes (recoveryHint + standard Details keys).**
+  `EnvelopeError` previously surfaced a one-line `message` plus a free-form
+  `details` map, which forced agents to parse English to figure out how to
+  recover. Reasoning: an AI client that hits
+  `code: "session_acquire_failed"` with no further context cannot tell
+  whether to retry, call `addin.launch`, or back off — the dispatcher knew
+  the answer locally but threw it away. Concretely:
+  - `internal/tools/result.go` — added
+    `EnvelopeError.RecoveryHint` (one-sentence English suggestion, omitted
+    when empty) and documented six standard `Details` keys (`probedEndpoint`,
+    `recoverableViaTool`, `cdpError`, `lastKnownTargets`, `manifestUrl`,
+    `expectedUrlPattern`) that tools should populate whenever the data is
+    locally available. Bumped `EnvelopeVersion` from `v0.3` to `v0.4`.
+  - `internal/session/session.go` — exported sentinel errors
+    `ErrReconnectBudgetExhausted` and `ErrDialFailed` so callers can branch
+    with `errors.Is` instead of substring-matching the wrapped message. The
+    dial-failure wrap uses `fmt.Errorf("%w: %w", ErrDialFailed, err)` so
+    `errors.Is(ctx.DeadlineExceeded)` still fires when the dial timed out.
+  - `internal/tools/dispatcher.go` — the single
+    `session_acquire_failed` branch is replaced by a `classifyAcquireErr`
+    helper that returns one of four codes
+    (`session_reconnect_budget_exhausted`, `session_acquire_timeout`,
+    `session_dial_failed`, `session_acquire_failed`), each with a
+    code-specific `RecoveryHint` plus `Details["probedEndpoint"]` and (for
+    the actionable cases) `Details["recoverableViaTool"] = "addin.launch"`.
+  - `internal/tools/runtime.go` — `ClassifyCDPErr` now uses
+    `errors.As` to pull the structured `*cdp.RemoteError` out of the chain,
+    surfacing `{code, message, data}` as `Details["cdpError"]` so an agent
+    can branch on the CDP-level code instead of regexing the message.
+  - `internal/tools/addintool/errors.go` — `mapPayloadError` populates
+    `RecoveryHint` for the well-known Office.js codes thrown by
+    `internal/js/_preamble.js`: `office_unavailable` / `excel_unavailable`,
+    `office_ready_failed` / `office_ready_timeout`, and
+    `requirement_unmet` / `requirement_check_failed`.
+  - `internal/session/session_test.go` — the existing reconnect-budget
+    test now asserts via `errors.Is(err, ErrDialFailed)` and
+    `errors.Is(err, ErrReconnectBudgetExhausted)` rather than substring
+    matching, validating the sentinel-error contract.
+  - `internal/tools/dispatcher_test.go` — new
+    `TestEnvelopeErrorRecoveryHints` table-driven test covers the four
+    acquire-failure modes and asserts code, category, `probedEndpoint`,
+    `recoverableViaTool`, and recoveryHint substring.
+  - `internal/tools/testdata/golden/{success,validation_error,cdp_error,timeout,unknown_tool}.json`
+    bumped to `v0.4`.
+
+- **Structured logging + per-call request correlation.** The binary
+  now configures `log/slog` with a JSON handler at startup. The
+  dispatcher (`internal/tools/dispatcher.go`) generates a
+  cryptographically-random 16-hex-char request id at the top of every
+  `Dispatch`, threads it through the call's `context.Context` via the
+  new `internal/log` helper, copies it into the envelope's
+  `diagnostics.requestId`, and emits `dispatch.start`/`dispatch.end`
+  debug log lines tagged with it. Downstream layers can pick the id
+  off ctx — `internal/cdp/connection.go` `Send` already does, so each
+  CDP round-trip can be tied back to one tool call without having to
+  reverse-engineer the call from a wall-clock window. Reasoning: the
+  server was previously silent unless `--log-file` was set, and even
+  then it wrote unstructured `fmt.Fprintf` lines with no correlation
+  id, which made it impossible to tell which CDP send belonged to
+  which tool call when an MCP client issued anything in parallel.
+  Concretely:
+  - `internal/log/log.go` *(new)* — leaf package (stdlib only) with
+    `WithRequestID`/`RequestID` for ctx-scoped ids and a
+    `RecoverGoroutine(name)` defer-friendly panic catcher that logs at
+    `ERROR` level via slog.
+  - `internal/tools/result.go` — added `Diagnostics.RequestID`. Bumped
+    `EnvelopeVersion` from `v0.2` to `v0.3` (per-call hex correlation
+    id stamped by the dispatcher and threaded through ctx).
+  - `internal/tools/testdata/golden/{success,validation_error,cdp_error,timeout,unknown_tool}.json`
+    bumped to `v0.3`. `canonicalize` in
+    `internal/tools/dispatcher_test.go` now zeroes `RequestID` so the
+    randomized id does not break golden diffs.
+  - `cmd/office-addin-mcp/main.go` — initializes `slog.SetDefault`
+    with `slog.NewJSONHandler` writing to `--log-file` (or stderr) at
+    the level chosen by the new `--log-level` flag (`debug|info|warn|
+    error`, default `info`). The mcp-server-exit error message now
+    goes through `slog.Error` rather than a raw `fmt.Fprintf`.
+  - `internal/tools/dispatcher_test.go` — new `TestDispatchStampsRequestID`
+    asserts `Diagnostics.RequestID` is 16 hex chars and unique across
+    five back-to-back calls.
+
+- **Panic recovery on every long-lived goroutine.** The CDP
+  `readLoop` and the launch package's `drainPipe`/`waitChild`
+  goroutines plus the session `Manager.gcLoop` previously had no
+  `defer recover()`, so a malformed frame, unexpected EOF in a child
+  pipe, or a stray nil deref would silently kill the goroutine and
+  leave the surrounding subsystem in an undefined state. Reasoning:
+  for a production AI bridge, "the server stopped responding" with no
+  log line is the worst possible failure mode — recover() costs
+  essentially nothing and turns the panic into a single structured
+  log entry plus a clean shutdown of the affected resource.
+  Concretely:
+  - `internal/cdp/connection.go` `readLoop` — `defer` block now
+    catches any panic, logs it via `slog.Error` with the goroutine
+    name and panic value, and calls `closeWithErr` so pending
+    requesters get `ErrClosed` instead of hanging forever. Also added
+    a `slog.Debug("cdp.send", ...)` tagged with the request id (when
+    one is on ctx) so per-CDP-call logs correlate with the dispatcher's
+    `dispatch.start`/`dispatch.end` lines.
+  - `internal/session/manager.go` `gcLoop` — wraps the loop body in
+    `defer log.RecoverGoroutine("session.gcLoop")`.
+  - `internal/launch/devserver.go` `drainPipe` and the anonymous
+    `cmd.Wait()` goroutine inside `waitChild` — same wrap.
+
 - **Documented stdio-only contract.** `cmd/office-addin-mcp/main.go` already
   rejects positional arguments and the historic `call` / `daemon` /
   `serve --stdio` subcommands have been gone since the MCP-over-stdio

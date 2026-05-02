@@ -122,19 +122,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 
 	conn, release, err := sess.Acquire(ctx, req.Endpoint)
 	if err != nil {
-		category := CategoryConnection
-		retryable := true
-		// reconnect-budget exhaustion is a user-visible terminal state until
-		// reset; surface it as non-retryable so callers know to back off.
-		if errors.Is(err, context.DeadlineExceeded) {
-			category = CategoryTimeout
-		}
-		return finalize(diag, start, 0, Result{Err: &EnvelopeError{
-			Code:      "session_acquire_failed",
-			Message:   err.Error(),
-			Category:  category,
-			Retryable: retryable,
-		}})
+		return finalize(diag, start, 0, Result{Err: classifyAcquireErr(err, req.Endpoint)})
 	}
 	defer release()
 
@@ -164,6 +152,59 @@ func finalize(diag Diagnostics, start time.Time, roundTrips int64, res Result) E
 		return Envelope{OK: false, Error: res.Err, Diagnostics: diag}
 	}
 	return Envelope{OK: true, Data: res.Data, Diagnostics: diag}
+}
+
+// classifyAcquireErr maps a session.Acquire failure to a rich EnvelopeError
+// with a code distinct enough for the agent to branch on, a recovery hint,
+// and Details["probedEndpoint"]/["recoverableViaTool"] when applicable.
+func classifyAcquireErr(err error, ep webview2.Config) *EnvelopeError {
+	probed := ep.WSEndpoint
+	if probed == "" {
+		probed = ep.BrowserURL
+	}
+	if probed == "" {
+		probed = "http://127.0.0.1:9222"
+	}
+	details := map[string]any{"probedEndpoint": probed}
+
+	switch {
+	case errors.Is(err, session.ErrReconnectBudgetExhausted):
+		details["recoverableViaTool"] = "addin.launch"
+		return &EnvelopeError{
+			Code:         "session_reconnect_budget_exhausted",
+			Message:      err.Error(),
+			Category:     CategoryConnection,
+			Retryable:    false,
+			RecoveryHint: "Reconnect budget (3 attempts per 60s) is exhausted. Excel may not be running with --remote-debugging-port=9222 — call addin.launch with the manifest, or wait 60 seconds and retry.",
+			Details:      details,
+		}
+	case errors.Is(err, context.DeadlineExceeded):
+		return &EnvelopeError{
+			Code:         "session_acquire_timeout",
+			Message:      err.Error(),
+			Category:     CategoryTimeout,
+			Retryable:    true,
+			RecoveryHint: "Tool call timed out before the CDP connection was ready. Retry with a longer ctx deadline, or call addin.launch if Excel is not running.",
+			Details:      details,
+		}
+	case errors.Is(err, session.ErrDialFailed):
+		details["recoverableViaTool"] = "addin.launch"
+		return &EnvelopeError{
+			Code:         "session_dial_failed",
+			Message:      err.Error(),
+			Category:     CategoryConnection,
+			Retryable:    true,
+			RecoveryHint: `Could not connect to the CDP endpoint. Confirm Excel is running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222", or call addin.launch.`,
+			Details:      details,
+		}
+	}
+	return &EnvelopeError{
+		Code:      "session_acquire_failed",
+		Message:   err.Error(),
+		Category:  CategoryConnection,
+		Retryable: true,
+		Details:   details,
+	}
 }
 
 // newRequestID returns 16 hex chars of cryptographic randomness, suitable as a

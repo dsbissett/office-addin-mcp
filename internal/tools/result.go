@@ -14,7 +14,11 @@ package tools
 //	       the CDP flatten session id; cdpRoundTrips diagnostic added.
 //	v0.3 — requestId diagnostic added; per-call hex correlation id stamped by
 //	       the dispatcher and threaded through ctx for downstream log lines.
-const EnvelopeVersion = "v0.3"
+//	v0.4 — recoveryHint field added to EnvelopeError plus standard Details keys
+//	       (probedEndpoint, recoverableViaTool, cdpError, lastKnownTargets,
+//	       manifestUrl, expectedUrlPattern). The AI client can self-recover by
+//	       reading these instead of parsing English error messages.
+const EnvelopeVersion = "v0.4"
 
 // Error categories. New categories must also be documented in
 // docs/tool-contracts.md (Phase 6) and added to the golden-JSON fixtures if a
@@ -38,13 +42,27 @@ type Envelope struct {
 	Diagnostics Diagnostics    `json:"diagnostics"`
 }
 
-// EnvelopeError is the failure payload.
+// EnvelopeError is the failure payload. RecoveryHint and the well-known
+// Details keys exist so an AI caller can self-recover without parsing the
+// (English-language) Message.
+//
+// Standard Details keys — populate whenever the data is locally available:
+//   - "probedEndpoint"     string         — endpoint we tried to reach (BrowserURL or WSEndpoint)
+//   - "recoverableViaTool" string         — tool name that can fix the failure (e.g. "addin.launch")
+//   - "cdpError"           map[string]any — raw {code, message, data} from a CDP error frame
+//   - "lastKnownTargets"   []map          — most recent target list, when known (selector misses)
+//   - "manifestUrl"        string         — manifest source URL when the failure is manifest-related
+//   - "expectedUrlPattern" string         — selector pattern that did not match anything
 type EnvelopeError struct {
-	Code      string         `json:"code"`
-	Message   string         `json:"message"`
-	Category  string         `json:"category"`
-	Retryable bool           `json:"retryable"`
-	Details   map[string]any `json:"details,omitempty"`
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Category  string `json:"category"`
+	Retryable bool   `json:"retryable"`
+	// RecoveryHint is a one-sentence English suggestion the agent can read
+	// when it doesn't recognize the code. Optional but strongly preferred for
+	// any failure that has a known fix path.
+	RecoveryHint string         `json:"recoveryHint,omitempty"`
+	Details      map[string]any `json:"details,omitempty"`
 }
 
 // Diagnostics carries observability fields populated by every tool. Variable

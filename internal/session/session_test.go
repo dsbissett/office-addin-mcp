@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -101,8 +102,8 @@ func TestSession_ReconnectBudgetExhaustion(t *testing.T) {
 		if err == nil {
 			t.Fatalf("expected dial failure on attempt %d", i)
 		}
-		if !strings.Contains(err.Error(), "dial:") {
-			t.Errorf("attempt %d: expected dial error, got %v", i, err)
+		if !errors.Is(err, ErrDialFailed) {
+			t.Errorf("attempt %d: expected ErrDialFailed, got %v", i, err)
 		}
 	}
 
@@ -110,8 +111,8 @@ func TestSession_ReconnectBudgetExhaustion(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	_, _, err := s.Acquire(ctx, ep)
-	if err == nil || !strings.Contains(err.Error(), "reconnect budget exhausted") {
-		t.Fatalf("expected budget error, got %v", err)
+	if err == nil || !errors.Is(err, ErrReconnectBudgetExhausted) {
+		t.Fatalf("expected ErrReconnectBudgetExhausted, got %v", err)
 	}
 }
 

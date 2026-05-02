@@ -4,11 +4,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/dsbissett/office-addin-mcp/internal/session"
+	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
 
 var updateGolden = flag.Bool("update", false, "update golden files in testdata/golden")
@@ -142,6 +147,70 @@ func TestDispatch_DiagnosticsAlwaysSet(t *testing.T) {
 	}
 	if env.Diagnostics.DurationMs < 0 {
 		t.Errorf("negative durationMs: %d", env.Diagnostics.DurationMs)
+	}
+}
+
+func TestEnvelopeErrorRecoveryHints(t *testing.T) {
+	ep := webview2.Config{BrowserURL: "http://127.0.0.1:9222"}
+	cases := []struct {
+		name           string
+		err            error
+		wantCode       string
+		wantCategory   string
+		wantHintSubstr string
+		wantTool       string // value expected at Details["recoverableViaTool"]
+	}{
+		{
+			name:           "reconnect_budget",
+			err:            session.ErrReconnectBudgetExhausted,
+			wantCode:       "session_reconnect_budget_exhausted",
+			wantCategory:   CategoryConnection,
+			wantHintSubstr: "Reconnect budget",
+			wantTool:       "addin.launch",
+		},
+		{
+			name:           "dial_failed",
+			err:            errors.Join(session.ErrDialFailed, errors.New("connection refused")),
+			wantCode:       "session_dial_failed",
+			wantCategory:   CategoryConnection,
+			wantHintSubstr: "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
+			wantTool:       "addin.launch",
+		},
+		{
+			name:           "timeout",
+			err:            context.DeadlineExceeded,
+			wantCode:       "session_acquire_timeout",
+			wantCategory:   CategoryTimeout,
+			wantHintSubstr: "timed out",
+		},
+		{
+			name:         "generic",
+			err:          errors.New("something else"),
+			wantCode:     "session_acquire_failed",
+			wantCategory: CategoryConnection,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyAcquireErr(tc.err, ep)
+			if got.Code != tc.wantCode {
+				t.Errorf("code=%q want %q", got.Code, tc.wantCode)
+			}
+			if got.Category != tc.wantCategory {
+				t.Errorf("category=%q want %q", got.Category, tc.wantCategory)
+			}
+			if probed, _ := got.Details["probedEndpoint"].(string); probed != ep.BrowserURL {
+				t.Errorf("probedEndpoint=%q want %q", probed, ep.BrowserURL)
+			}
+			if tc.wantHintSubstr != "" && !strings.Contains(got.RecoveryHint, tc.wantHintSubstr) {
+				t.Errorf("recoveryHint=%q does not contain %q", got.RecoveryHint, tc.wantHintSubstr)
+			}
+			if tc.wantTool != "" {
+				if tool, _ := got.Details["recoverableViaTool"].(string); tool != tc.wantTool {
+					t.Errorf("recoverableViaTool=%q want %q", tool, tc.wantTool)
+				}
+			}
+		})
 	}
 }
 
