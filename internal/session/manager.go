@@ -3,6 +3,8 @@ package session
 import (
 	"sync"
 	"time"
+
+	internallog "github.com/dsbissett/office-addin-mcp/internal/log"
 )
 
 // Manager owns a pool of named Sessions, with optional idle GC.
@@ -90,6 +92,7 @@ func (m *Manager) Close() {
 }
 
 func (m *Manager) gcLoop() {
+	defer internallog.RecoverGoroutine("session.gcLoop")
 	interval := m.cfg.IdleTimeout / 4
 	if interval < time.Second {
 		interval = time.Second

@@ -11,8 +11,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/dsbissett/office-addin-mcp/internal/launch"
 	mcpserver "github.com/dsbissett/office-addin-mcp/internal/mcp"
@@ -42,6 +44,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		browserURL     = fs.String("browser-url", "", "Chrome DevTools HTTP endpoint (default: probe http://127.0.0.1:9222)")
 		wsEndpoint     = fs.String("ws-endpoint", "", "Direct browser WebSocket endpoint (overrides --browser-url)")
 		logFile        = fs.String("log-file", "", "Append diagnostic logs to this file (defaults to stderr)")
+		logLevel       = fs.String("log-level", "info", "Minimum slog level: debug, info, warn, error")
 		allowDangerous = fs.Bool("allow-dangerous-cdp", false, "Allow CDP methods marked dangerous (Browser.crash, Runtime.terminateExecution, ...). May also be set via "+dangerousEnvVar+"=1.")
 		exposeRawCDP   = fs.Bool("expose-raw-cdp", false, "Also register the ~411 code-generated cdp.* tools (raw Chrome DevTools Protocol). May also be set via "+exposeRawCDPEnvVar+"=1.")
 	)
@@ -74,6 +77,13 @@ func run(args []string, stdout, stderr io.Writer) int {
 		logSink = f
 	}
 
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		fmt.Fprintf(stderr, "%v\n", err)
+		return 2
+	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(logSink, &slog.HandlerOptions{Level: level})))
+
 	dangerous := *allowDangerous || envFlagSet(dangerousEnvVar)
 	rawCDP := *exposeRawCDP || envFlagSet(exposeRawCDPEnvVar)
 
@@ -100,10 +110,24 @@ func run(args []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	if err := srv.Run(ctx); err != nil {
-		fmt.Fprintf(logSink, "mcp server: %v\n", err)
+		slog.Error("mcp server exited with error", "error", err)
 		return 1
 	}
 	return 0
+}
+
+func parseLogLevel(s string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info", "":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	}
+	return 0, fmt.Errorf("invalid --log-level %q (want debug|info|warn|error)", s)
 }
 
 func envFlagSet(name string) bool {
@@ -124,6 +148,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --browser-url           Chrome DevTools HTTP endpoint (default: http://127.0.0.1:9222)")
 	fmt.Fprintln(w, "  --ws-endpoint           Direct browser WebSocket URL (overrides --browser-url)")
 	fmt.Fprintln(w, "  --log-file              Append diagnostics here instead of stderr")
+	fmt.Fprintln(w, "  --log-level             slog level: debug|info|warn|error (default info)")
 	fmt.Fprintln(w, "  --allow-dangerous-cdp   Permit dangerous CDP methods (env: "+dangerousEnvVar+")")
 	fmt.Fprintln(w, "  --expose-raw-cdp        Register the raw cdp.* tool surface (env: "+exposeRawCDPEnvVar+")")
 	fmt.Fprintln(w, "  --version               Print version and exit")

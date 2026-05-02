@@ -2,13 +2,17 @@ package tools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
+	internallog "github.com/dsbissett/office-addin-mcp/internal/log"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
@@ -65,11 +69,18 @@ func Dispatch(ctx context.Context, reg *Registry, req Request) Envelope {
 // Always returns a fully populated Envelope.
 func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	start := time.Now()
+	requestID := newRequestID()
+	ctx = internallog.WithRequestID(ctx, requestID)
 	diag := Diagnostics{
 		Tool:            req.Tool,
 		EnvelopeVersion: EnvelopeVersion,
+		RequestID:       requestID,
 		SessionID:       req.SessionID,
 	}
+	slog.Debug("dispatch.start", "request_id", requestID, "tool", req.Tool, "session_id", req.SessionID)
+	defer func() {
+		slog.Debug("dispatch.end", "request_id", requestID, "tool", req.Tool, "duration_ms", time.Since(start).Milliseconds())
+	}()
 
 	tool, ok := d.Registry.Get(req.Tool)
 	if !ok {
@@ -153,6 +164,17 @@ func finalize(diag Diagnostics, start time.Time, roundTrips int64, res Result) E
 		return Envelope{OK: false, Error: res.Err, Diagnostics: diag}
 	}
 	return Envelope{OK: true, Data: res.Data, Diagnostics: diag}
+}
+
+// newRequestID returns 16 hex chars of cryptographic randomness, suitable as a
+// per-call correlation id. Falls back to a timestamp string only if the OS RNG
+// is unavailable — that path should be unreachable in practice.
+func newRequestID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return fmt.Sprintf("ts-%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
 }
 
 // MarshalEnvelope encodes an envelope to JSON, ensuring Data is rendered as

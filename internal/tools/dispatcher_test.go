@@ -58,6 +58,7 @@ func fakeTool() Tool {
 // wording).
 func canonicalize(env Envelope) Envelope {
 	env.Diagnostics.DurationMs = 0
+	env.Diagnostics.RequestID = ""
 	env.Diagnostics.SessionID = ""
 	env.Diagnostics.TargetID = ""
 	env.Diagnostics.Endpoint = ""
@@ -141,5 +142,26 @@ func TestDispatch_DiagnosticsAlwaysSet(t *testing.T) {
 	}
 	if env.Diagnostics.DurationMs < 0 {
 		t.Errorf("negative durationMs: %d", env.Diagnostics.DurationMs)
+	}
+}
+
+func TestDispatchStampsRequestID(t *testing.T) {
+	reg := NewRegistry()
+	reg.MustRegister(fakeTool())
+
+	seen := map[string]struct{}{}
+	for i := 0; i < 5; i++ {
+		env := Dispatch(context.Background(), reg, Request{
+			Tool:   "fake.run",
+			Params: []byte(`{"mode":"ok"}`),
+		})
+		id := env.Diagnostics.RequestID
+		if len(id) != 16 {
+			t.Fatalf("requestId=%q want 16 hex chars", id)
+		}
+		if _, dup := seen[id]; dup {
+			t.Fatalf("duplicate requestId across calls: %q", id)
+		}
+		seen[id] = struct{}{}
 	}
 }

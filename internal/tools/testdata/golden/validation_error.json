@@ -8,7 +8,7 @@
   },
   "diagnostics": {
     "tool": "fake.run",
-    "envelopeVersion": "v0.2",
+    "envelopeVersion": "v0.3",
     "cdpRoundTrips": 0,
     "durationMs": 0
   }

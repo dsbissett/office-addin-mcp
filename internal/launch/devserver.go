@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	internallog "github.com/dsbissett/office-addin-mcp/internal/log"
 )
 
 const (
@@ -192,6 +194,7 @@ func attachOutput(cmd *exec.Cmd, buf *outputBuffer) {
 }
 
 func drainPipe(r interface{ Read(p []byte) (int, error) }, buf *outputBuffer) {
+	defer internallog.RecoverGoroutine("launch.drainPipe")
 	chunk := make([]byte, 4096)
 	for {
 		n, err := r.Read(chunk)
@@ -209,6 +212,7 @@ func drainPipe(r interface{ Read(p []byte) (int, error) }, buf *outputBuffer) {
 func waitChild(cmd *exec.Cmd) <-chan error {
 	ch := make(chan error, 1)
 	go func() {
+		defer internallog.RecoverGoroutine("launch.waitChild")
 		ch <- cmd.Wait()
 	}()
 	return ch

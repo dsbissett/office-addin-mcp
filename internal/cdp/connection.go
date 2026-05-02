@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
+
+	internallog "github.com/dsbissett/office-addin-mcp/internal/log"
 )
 
 // RemoteError is a CDP error response payload.
@@ -120,6 +123,12 @@ func (c *Connection) closeWithErr(err error) {
 
 func (c *Connection) readLoop() {
 	defer close(c.done)
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic", "goroutine", "cdp.readLoop", "panic", r)
+			c.closeWithErr(fmt.Errorf("cdp readLoop panic: %v", r))
+		}
+	}()
 	for {
 		_, data, err := c.ws.ReadMessage()
 		if err != nil {
@@ -245,6 +254,9 @@ func (c *Connection) RoundTrips() int64 { return c.roundTrips.Load() }
 // be empty for browser-level commands; otherwise it routes via flatten sessions.
 func (c *Connection) Send(ctx context.Context, sessionID, method string, params any) (json.RawMessage, error) {
 	c.roundTrips.Add(1)
+	if rid := internallog.RequestID(ctx); rid != "" {
+		slog.Debug("cdp.send", "request_id", rid, "session_id", sessionID, "method", method)
+	}
 	c.mu.Lock()
 	if c.closed {
 		err := c.closedErr
