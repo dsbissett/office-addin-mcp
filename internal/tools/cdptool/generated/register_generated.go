@@ -4,6 +4,29 @@ package generated
 
 import "github.com/dsbissett/office-addin-mcp/internal/tools"
 
+// Domains lists every code-generated CDP domain in alphabetical order. Used
+// by callers that need to validate a user-supplied --cdp-domains list.
+var Domains = []string{
+	"Accessibility",
+	"Animation",
+	"BackgroundService",
+	"Browser",
+	"CSS",
+	"CacheStorage",
+	"DOM",
+	"DOMDebugger",
+	"Debugger",
+	"Emulation",
+	"Fetch",
+	"Input",
+	"Network",
+	"Page",
+	"Runtime",
+	"Storage",
+	"Target",
+	"WebAuthn",
+}
+
 // RegisterGenerated adds every code-generated CDP tool to the registry.
 func RegisterGenerated(r *tools.Registry) {
 	RegisterAccessibility(r)
@@ -24,4 +47,64 @@ func RegisterGenerated(r *tools.Registry) {
 	RegisterStorage(r)
 	RegisterTarget(r)
 	RegisterWebAuthn(r)
+}
+
+// RegisterGeneratedFiltered registers only the domains whose name appears in
+// allowed. Empty map registers nothing; pass nil/empty plus call
+// RegisterGenerated separately for the unfiltered behavior.
+func RegisterGeneratedFiltered(r *tools.Registry, allowed map[string]bool) {
+	if allowed["Accessibility"] {
+		RegisterAccessibility(r)
+	}
+	if allowed["Animation"] {
+		RegisterAnimation(r)
+	}
+	if allowed["BackgroundService"] {
+		RegisterBackgroundService(r)
+	}
+	if allowed["Browser"] {
+		RegisterBrowser(r)
+	}
+	if allowed["CSS"] {
+		RegisterCSS(r)
+	}
+	if allowed["CacheStorage"] {
+		RegisterCacheStorage(r)
+	}
+	if allowed["DOM"] {
+		RegisterDOM(r)
+	}
+	if allowed["DOMDebugger"] {
+		RegisterDOMDebugger(r)
+	}
+	if allowed["Debugger"] {
+		RegisterDebugger(r)
+	}
+	if allowed["Emulation"] {
+		RegisterEmulation(r)
+	}
+	if allowed["Fetch"] {
+		RegisterFetch(r)
+	}
+	if allowed["Input"] {
+		RegisterInput(r)
+	}
+	if allowed["Network"] {
+		RegisterNetwork(r)
+	}
+	if allowed["Page"] {
+		RegisterPage(r)
+	}
+	if allowed["Runtime"] {
+		RegisterRuntime(r)
+	}
+	if allowed["Storage"] {
+		RegisterStorage(r)
+	}
+	if allowed["Target"] {
+		RegisterTarget(r)
+	}
+	if allowed["WebAuthn"] {
+		RegisterWebAuthn(r)
+	}
 }

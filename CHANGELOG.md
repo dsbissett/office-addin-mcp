@@ -4,6 +4,64 @@
 
 ### Added
 
+- **`--cdp-domains` flag for slicing the raw CDP surface.** When users
+  flipped on `--expose-raw-cdp`, every code-generated `cdp.*` tool
+  registered at once — ~411 tools cost the agent thousands of tokens in
+  the `tools/list` response, and most domains (Animation, WebAuthn,
+  Debugger) aren't useful for Office automation. Reasoning: agents that
+  only need DOM + Page + Runtime should be able to opt into that slice
+  without paying for the rest, and a typo in `--cdp-domains` should fail
+  fast with a list of valid names rather than silently registering
+  nothing. Concretely:
+  - `cmd/gen-cdp-tools/template.go` — `RenderRegister` now emits two new
+    artifacts alongside `RegisterGenerated`: a sorted `Domains []string`
+    catalog and `RegisterGeneratedFiltered(r, allowed map[string]bool)`
+    that registers only the domains whose name is in `allowed`. Both go
+    into `register_generated.go`, which means the drift test still
+    enforces byte-equal regen output.
+  - `internal/tools/cdptool/generated/register_generated.go` — regenerated
+    to add `Domains` (18 names) and `RegisterGeneratedFiltered`.
+  - `cmd/gen-cdp-tools/testdata/golden/register_generated.go` — golden
+    fixture refreshed so the codegen golden test agrees with the new
+    template output.
+  - `internal/tools/cdptool/register.go` — new
+    `RegisterFiltered(r, allowed []string)` that registers
+    `cdp.selectTarget` (the cache primer is useful with or without the
+    method tools) plus only the named domains. Empty allowed list still
+    registers `selectTarget`. Also exposes `Domains() []string` so
+    `cmd/office-addin-mcp` can validate user input without importing
+    `internal/tools/cdptool/generated` directly.
+  - `internal/mcp/registry.go` — `DefaultRegistry` signature changed from
+    `(exposeRawCDP bool)` to `(sel CDPSelection)`. New `CDPSelection`
+    type carries `Enabled bool, Domains []string`. The zero value
+    registers nothing (default behavior); `Enabled=true, Domains=nil`
+    matches the legacy `--expose-raw-cdp` semantic; `Enabled=true,
+    Domains=[…]` filters.
+  - `internal/mcp/registry_test.go` — call sites updated to the new
+    signature; added `TestCDPDomainsFilterRegistersOnlyNamedDomains`
+    asserting `Domains: ["DOM", "Page"]` registers `cdp.dOM.*` /
+    `cdp.page.*` / `cdp.selectTarget` while filtering out
+    `cdp.animation.*` / `cdp.runtime.*`.
+  - `cmd/office-addin-mcp/main.go` — new `--cdp-domains` flag (CSV) and
+    `--list-cdp-domains` flag. New `buildCDPSelection(enabled, csv)`
+    helper trims/validates the CSV against `cdptool.Domains()` — typos
+    fail with `unknown domain(s) [Foo]. Available: Accessibility,
+    Animation, …`. A non-empty `--cdp-domains` implicitly enables CDP
+    exposure, so users don't have to pass both `--expose-raw-cdp` and
+    `--cdp-domains`. `--list-cdp-domains` prints the catalog and exits
+    so users can discover the names without grepping the source.
+  - `cmd/office-addin-mcp/main_test.go` — three new
+    `TestBuildCDPSelection_*` cases cover empty CSV, the
+    "non-empty domains imply enabled" rule, and the unknown-domain
+    rejection path.
+
+  Description-enrichment of the high-level `excel.*` / `page.*` /
+  `addin.*` tools (concrete examples in their input schemas) and the
+  `recommended_domains` manifest annotation are deferred to a follow-up
+  — F7's structural piece (`--cdp-domains`) ships now; the doc-quality
+  piece can land independently without touching the registry shape
+  again.
+
 - **MCP-native structured results (Title, OutputSchema, Annotations,
   StructuredContent).** Our MCP adapter previously registered tools with
   Name + Description + InputSchema only and emitted every result as

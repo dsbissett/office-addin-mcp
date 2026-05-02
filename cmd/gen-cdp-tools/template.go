@@ -160,6 +160,17 @@ func RenderDomain(d DomainGen) ([]byte, error) {
 
 // RenderRegister builds register_generated.go which fans out to each
 // domain's RegisterX. Domain order is sorted for determinism.
+//
+// In addition to RegisterGenerated (no-arg, registers everything), the file
+// emits:
+//
+//   - Domains — sorted slice of every domain name. Lets callers validate a
+//     user-supplied --cdp-domains list and print "did you mean…?" hints.
+//   - RegisterGeneratedFiltered(r, allowed) — registers only the domains
+//     whose name appears in the allowed map. Empty map → registers nothing.
+//
+// The filtered form is what F7 (`--cdp-domains` flag) calls so the agent
+// sees only the slice of CDP it actually opted into.
 func RenderRegister(domains []string) ([]byte, error) {
 	sorted := append([]string(nil), domains...)
 	sort.Strings(sorted)
@@ -170,11 +181,30 @@ package generated
 
 import "github.com/dsbissett/office-addin-mcp/internal/tools"
 
+// Domains lists every code-generated CDP domain in alphabetical order. Used
+// by callers that need to validate a user-supplied --cdp-domains list.
+var Domains = []string{
+`)
+	for _, d := range sorted {
+		fmt.Fprintf(&buf, "\t%q,\n", d)
+	}
+	buf.WriteString(`}
+
 // RegisterGenerated adds every code-generated CDP tool to the registry.
 func RegisterGenerated(r *tools.Registry) {
 `)
 	for _, d := range sorted {
 		fmt.Fprintf(&buf, "\tRegister%s(r)\n", d)
+	}
+	buf.WriteString(`}
+
+// RegisterGeneratedFiltered registers only the domains whose name appears in
+// allowed. Empty map registers nothing; pass nil/empty plus call
+// RegisterGenerated separately for the unfiltered behavior.
+func RegisterGeneratedFiltered(r *tools.Registry, allowed map[string]bool) {
+`)
+	for _, d := range sorted {
+		fmt.Fprintf(&buf, "\tif allowed[%q] {\n\t\tRegister%s(r)\n\t}\n", d, d)
 	}
 	buf.WriteString("}\n")
 	return format.Source(buf.Bytes())

@@ -19,6 +19,7 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/launch"
 	mcpserver "github.com/dsbissett/office-addin-mcp/internal/mcp"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/cdptool"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
 
@@ -48,6 +49,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		launchExcel    = fs.Bool("launch-excel", false, "On startup, if no CDP endpoint is reachable, detect the add-in project under cwd and run addin.launch automatically. Equivalent to calling addin.ensureRunning at boot.")
 		allowDangerous = fs.Bool("allow-dangerous-cdp", false, "Allow CDP methods marked dangerous (Browser.crash, Runtime.terminateExecution, ...). May also be set via "+dangerousEnvVar+"=1.")
 		exposeRawCDP   = fs.Bool("expose-raw-cdp", false, "Also register the ~411 code-generated cdp.* tools (raw Chrome DevTools Protocol). May also be set via "+exposeRawCDPEnvVar+"=1.")
+		cdpDomains     = fs.String("cdp-domains", "", "Comma-separated CDP domains to expose (e.g. DOM,Page,Runtime,Input). When non-empty implies --expose-raw-cdp; only the named domains' tools register. See --list-cdp-domains.")
+		listCDPDomains = fs.Bool("list-cdp-domains", false, "Print the available CDP domain names (for --cdp-domains) and exit.")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -58,6 +61,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	if *showVersion {
 		fmt.Fprintln(stdout, version)
+		return 0
+	}
+	if *listCDPDomains {
+		for _, d := range cdptool.Domains() {
+			fmt.Fprintln(stdout, d)
+		}
 		return 0
 	}
 	if fs.NArg() > 0 {
@@ -87,6 +96,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	dangerous := *allowDangerous || envFlagSet(dangerousEnvVar)
 	rawCDP := *exposeRawCDP || envFlagSet(exposeRawCDPEnvVar)
+
+	cdpSel, err := buildCDPSelection(rawCDP, *cdpDomains)
+	if err != nil {
+		fmt.Fprintf(stderr, "%v\n", err)
+		return 2
+	}
 
 	sessMgr := session.NewManager(session.Config{})
 	defer sessMgr.Close()
@@ -121,7 +136,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Version:        version,
 		Endpoint:       endpoint,
 		AllowDangerous: dangerous,
-		Registry:       mcpserver.DefaultRegistry(rawCDP),
+		Registry:       mcpserver.DefaultRegistry(cdpSel),
 		Sessions:       sessMgr,
 	})
 
@@ -149,6 +164,44 @@ func autoLaunchExcel(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return res.CDPURL, nil
+}
+
+// buildCDPSelection turns the (--expose-raw-cdp, --cdp-domains) flag pair
+// into a CDPSelection. A non-empty --cdp-domains implies enabled=true even
+// when --expose-raw-cdp is off, so users can opt into a slice of CDP without
+// also having to flip the global expose flag. Each named domain is validated
+// against cdptool.Domains() so a typo fails fast at startup with a useful
+// "available domains" hint instead of registering nothing.
+func buildCDPSelection(enabled bool, csv string) (mcpserver.CDPSelection, error) {
+	csv = strings.TrimSpace(csv)
+	if csv == "" {
+		return mcpserver.CDPSelection{Enabled: enabled}, nil
+	}
+	available := cdptool.Domains()
+	valid := make(map[string]bool, len(available))
+	for _, d := range available {
+		valid[d] = true
+	}
+	parts := strings.Split(csv, ",")
+	domains := make([]string, 0, len(parts))
+	var bad []string
+	for _, raw := range parts {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			continue
+		}
+		if !valid[name] {
+			bad = append(bad, name)
+			continue
+		}
+		domains = append(domains, name)
+	}
+	if len(bad) > 0 {
+		return mcpserver.CDPSelection{}, fmt.Errorf(
+			"--cdp-domains: unknown domain(s) %v. Available: %s",
+			bad, strings.Join(available, ", "))
+	}
+	return mcpserver.CDPSelection{Enabled: true, Domains: domains}, nil
 }
 
 func parseLogLevel(s string) (slog.Level, error) {
@@ -187,5 +240,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --launch-excel          Auto-detect+launch the add-in under cwd at startup if no CDP endpoint is reachable")
 	fmt.Fprintln(w, "  --allow-dangerous-cdp   Permit dangerous CDP methods (env: "+dangerousEnvVar+")")
 	fmt.Fprintln(w, "  --expose-raw-cdp        Register the raw cdp.* tool surface (env: "+exposeRawCDPEnvVar+")")
+	fmt.Fprintln(w, "  --cdp-domains           Comma-separated CDP domains to expose (e.g. DOM,Page,Runtime); implies --expose-raw-cdp")
+	fmt.Fprintln(w, "  --list-cdp-domains      Print the available CDP domain names and exit")
 	fmt.Fprintln(w, "  --version               Print version and exit")
 }
