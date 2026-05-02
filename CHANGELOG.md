@@ -2,8 +2,50 @@
 
 ## Unreleased
 
+### Changed
+
+- **Documented stdio-only contract.** `cmd/office-addin-mcp/main.go` already
+  rejects positional arguments and the historic `call` / `daemon` /
+  `serve --stdio` subcommands have been gone since the MCP-over-stdio
+  rewrite, but the README continued to advertise them and the version
+  metadata across `mcp.json`, the npm package files, and the README
+  banner had drifted. Reasoning: misleading docs cause new users to
+  type a command and immediately hit `unexpected argument`, eroding
+  trust on first contact, and the version disagreement makes it
+  impossible to tell at a glance which tag a checkout corresponds to.
+  Concretely:
+  - `README.md` now describes the binary as MCP-over-stdio only;
+    removed the "Daemon mode" and "Stdio mode (MCP protocol)" sections,
+    the broken `office-addin-mcp call …` Quick-start examples, the
+    `--no-daemon` / `--idle-timeout` flag rows, and the Subcommands
+    table. Added the missing `--ws-endpoint`, `--log-file`, and
+    `--version` flags. Replaced the hard-coded `v0.1.0` banner with a
+    pointer to the GitHub Releases page so the doc no longer goes
+    stale on every tag.
+  - `npm/main/package.json`, `npm/win32-x64/package.json`,
+    `npm/darwin-x64/package.json`, `npm/darwin-arm64/package.json`,
+    `npm/linux-x64/package.json`, `npm/linux-arm64/package.json` —
+    versions (and `optionalDependencies` pins in `npm/main`) bumped
+    from `0.1.0`/`0.1.1` to `0.2.0` to match `mcp.json`. The release
+    workflow re-stamps these from the tag at publish time, so the
+    checked-in values are informational, but consistent baseline state
+    keeps `git diff` against a release tag readable.
+
 ### Added
 
+- **Release workflow drift check.**
+  `.github/workflows/release.yml` now runs a "Contract drift check"
+  step before the existing version comparison. It (a) greps `README.md`
+  for the four removed subcommand invocations
+  (`office-addin-mcp call`, `office-addin-mcp daemon`,
+  `office-addin-mcp serve --stdio`, `office-addin-mcp list-tools`)
+  and (b) asserts every checked-in
+  `npm/<platform>/package.json` and `npm/main/package.json` version
+  agrees with `mcp.json`. Reasoning: the prior behavior allowed a tag
+  to ship even when the README still advertised dead subcommands or
+  one of the npm packages had been hand-edited but its peers missed
+  — this check fails fast at the start of the release pipeline so the
+  drift is caught before publishing to npm or the MCP registry.
 - **`page.consoleLog`, `page.networkLog`, `page.networkBody`.** Three
   event-buffer-backed inspection tools for the high-level surface. The
   first call against a target subscribes to the relevant CDP events

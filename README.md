@@ -2,9 +2,9 @@
 
 MCP server for driving Office add-ins and Excel via WebView2 and the Chrome DevTools Protocol.
 
-`office-addin-mcp` is a Go binary that exposes a high-level tool surface for Excel and browser add-ins running inside WebView2. It speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio or a local TCP daemon.
+`office-addin-mcp` is a Go binary that exposes a high-level tool surface for Excel and browser add-ins running inside WebView2. It speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio.
 
-> v0.1.0 — see [CHANGELOG.md](CHANGELOG.md)
+See the [latest release](https://github.com/dsbissett/office-addin-mcp/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
@@ -12,8 +12,7 @@ MCP server for driving Office add-ins and Excel via WebView2 and the Chrome DevT
 - **Page interaction** — screenshot, snapshot, click, fill, type, hover, navigate, evaluate, console log, network log, and more
 - **Add-in lifecycle** — detect, launch, and stop add-ins; open task-pane dialogs
 - **~411 raw CDP methods** — code-generated from Chrome's protocol JSON, hidden by default (`--expose-raw-cdp` to enable)
-- **Daemon mode** — persistent local server with automatic session reconnect for low-latency repeated calls
-- **Stdio mode** — pipe-friendly MCP transport for agents that read/write JSON on stdin/stdout
+- **MCP-native stdio transport** — plug into Claude Code, Cursor, VS Code GitHub Copilot, Codex, Windsurf, or any MCP-compatible client
 
 ## Requirements
 
@@ -155,56 +154,9 @@ The server speaks MCP over stdio. Configure your client with:
 
 ## Usage
 
-### Quick start
+The binary speaks MCP over stdio. Tools are listed and invoked by your MCP client (Claude Code, Cursor, VS Code Copilot, etc.) — see [MCP Client Configuration](#mcp-client-configuration) above for setup.
 
-```bash
-# List all available tools
-office-addin-mcp list-tools
-
-# Read a worksheet range
-office-addin-mcp call \
-  --tool excel.readRange \
-  --param '{"address":"A1:D10","urlPattern":"taskpane"}' \
-  --browser-url http://127.0.0.1:9222
-
-# Capture a screenshot
-office-addin-mcp call \
-  --tool page.screenshot \
-  --param '{"urlPattern":"taskpane","outputPath":"./shot.png"}' \
-  --browser-url http://127.0.0.1:9222
-
-# List WebView2 targets
-office-addin-mcp call --tool pages.list --browser-url http://127.0.0.1:9222
-```
-
-The `urlPattern` parameter selects the WebView2 page by substring match against the target URL.
-
-### Daemon mode
-
-Run a persistent daemon for low-latency repeated calls. Sessions reconnect automatically within a 3-reconnect-per-60s budget.
-
-```bash
-# Terminal 1 — start the daemon
-office-addin-mcp daemon --idle-timeout 30m
-
-# Terminal 2 — calls automatically route to the daemon
-office-addin-mcp call \
-  --tool excel.readRange \
-  --param '{"address":"A1"}' \
-  --browser-url http://127.0.0.1:9222
-```
-
-The daemon writes `{port, token, pid}` to `%LOCALAPPDATA%\office-addin-mcp\daemon.json` (Windows) or `$XDG_CACHE_HOME/office-addin-mcp/daemon.json` (mode 0600). Pass `--no-daemon` to force in-process dispatch.
-
-Watch `diagnostics.cdpRoundTrips` in the response — the first call costs 3 round-trips; subsequent calls in the same session drop to 1.
-
-### Stdio mode (MCP protocol)
-
-```bash
-office-addin-mcp serve --stdio
-```
-
-Reads newline-delimited MCP JSON requests from stdin and writes responses to stdout. This is the transport used by all MCP clients above.
+The `urlPattern` parameter accepted by most tools selects the WebView2 page by substring match against the target URL. After the first call against a session, the selector cache drops `diagnostics.cdpRoundTrips` from ~3 to 1 on subsequent calls.
 
 ## Tool Groups
 
@@ -220,22 +172,14 @@ Reads newline-delimited MCP JSON requests from stdin and writes responses to std
 
 | Flag | Env | Default | Description |
 |---|---|---|---|
-| `--browser-url` | `OAMCP_BROWSER_URL` | `http://127.0.0.1:9222` | WebView2 / Chrome debug endpoint |
+| `--browser-url` | — | `http://127.0.0.1:9222` | WebView2 / Chrome debug endpoint |
+| `--ws-endpoint` | — | — | Direct browser WebSocket URL (overrides `--browser-url`) |
+| `--log-file` | — | stderr | Append diagnostics to a file instead of stderr |
 | `--expose-raw-cdp` | `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP` | off | Register ~411 raw `cdp.*` methods |
 | `--allow-dangerous-cdp` | `OAMCP_ALLOW_DANGEROUS_CDP` | off | Enable crash/terminate CDP methods |
-| `--no-daemon` | — | — | Force in-process dispatch, skip daemon lookup |
-| `--idle-timeout` | — | `30m` | Daemon: shut down after this idle period |
+| `--version` | — | — | Print binary version and exit |
 
-## Subcommands
-
-| Command | Description |
-|---|---|
-| `call` | Invoke one tool. Auto-routes to a running daemon. |
-| `list-tools` | Print tool catalog with name, description, and JSON Schema. |
-| `daemon` | Run the persistent local TCP server. |
-| `serve --stdio` | Read MCP JSON requests from stdin, write responses to stdout. |
-| `version` | Print binary version. |
-| `help` | Print usage. |
+The binary takes no positional subcommands — it speaks MCP over stdio. Earlier `call` / `daemon` / `serve --stdio` subcommands have been removed.
 
 ## License
 

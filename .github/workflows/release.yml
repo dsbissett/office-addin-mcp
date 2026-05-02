@@ -23,6 +23,29 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      - name: Contract drift check
+        run: |
+          fail=0
+          # README must not advertise removed subcommands
+          for needle in "office-addin-mcp call" "office-addin-mcp daemon" "office-addin-mcp serve --stdio" "office-addin-mcp list-tools"; do
+            if grep -F "$needle" README.md > /dev/null; then
+              echo "::error file=README.md::README references removed subcommand '$needle'"
+              fail=1
+            fi
+          done
+          # All checked-in npm/*/package.json versions must agree with mcp.json
+          mcp_version=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('mcp.json')).version)")
+          for pkg in npm/main/package.json npm/win32-x64/package.json npm/darwin-x64/package.json npm/darwin-arm64/package.json npm/linux-x64/package.json npm/linux-arm64/package.json; do
+            v=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pkg')).version)")
+            if [ "$v" != "$mcp_version" ]; then
+              echo "::error file=$pkg::$pkg version $v disagrees with mcp.json $mcp_version"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            exit 1
+          fi
+
       - name: Check tag version is greater than npm latest
         id: version-check
         run: |

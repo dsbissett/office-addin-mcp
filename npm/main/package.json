@@ -1,6 +1,6 @@
 {
   "name": "@dsbissett/office-addin-mcp",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "mcpName": "io.github.dsbissett/office-addin-mcp",
   "description": "MCP server for driving Office add-ins via WebView2/CDP",
   "keywords": [
@@ -26,10 +26,10 @@
     "bin"
   ],
   "optionalDependencies": {
-    "@dsbissett/office-addin-mcp-win32-x64": "0.1.0",
-    "@dsbissett/office-addin-mcp-darwin-x64": "0.1.0",
-    "@dsbissett/office-addin-mcp-darwin-arm64": "0.1.0",
-    "@dsbissett/office-addin-mcp-linux-x64": "0.1.0",
-    "@dsbissett/office-addin-mcp-linux-arm64": "0.1.0"
+    "@dsbissett/office-addin-mcp-win32-x64": "0.2.0",
+    "@dsbissett/office-addin-mcp-darwin-x64": "0.2.0",
+    "@dsbissett/office-addin-mcp-darwin-arm64": "0.2.0",
+    "@dsbissett/office-addin-mcp-linux-x64": "0.2.0",
+    "@dsbissett/office-addin-mcp-linux-arm64": "0.2.0"
   }
 }
