@@ -1,8 +1,10 @@
 // Package session manages stateful CDP sessions across calls. One Session
-// owns one CDP connection, a sticky target/sessionId selection, a reconnect
-// budget, and per-session serialization (Office.js context.sync flows do not
-// parallelize). The package is consumed by tools.Dispatcher in both daemon
-// (persistent) and one-shot (ephemeral) modes.
+// owns one CDP connection plus per-session state (sticky target/sessionId
+// selection, snapshot, enabled-domain bookkeeping, event buffers, reconnect
+// budget). Tool calls against the same session can run concurrently — the
+// connection lock is read-shared during steady-state command dispatch, and
+// per-resource state has its own narrower lock. The package is consumed by
+// tools.Dispatcher in both daemon (persistent) and one-shot (ephemeral) modes.
 package session
 
 import (
@@ -11,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
@@ -70,44 +73,43 @@ func (sel Selection) matches(targetID, urlPattern string) bool {
 	return sel.SelectorTargetID == targetID && sel.SelectorURLPattern == urlPattern
 }
 
-// Session is one logical client session. It is safe for concurrent acquisition
-// — Acquire blocks on the internal mutex; tool calls thus serialize per session.
+// Session is one logical client session. Acquire takes a *read* lock on the
+// connection, so multiple parallel tool calls can share one CDP connection
+// without serializing — only dial / reconnect / close take the write lock.
+// Per-resource state (selection, snapshot, enabled, eventBufs) has its own
+// narrower lock so state mutations don't block steady-state CDP dispatch
+// either.
 type Session struct {
 	id  string
 	cfg Config
 
-	mu       sync.Mutex // serializes tool calls and guards every field below
-	conn     *cdp.Connection
-	epConfig webview2.Config
-	lastUsed time.Time
-
+	// connMu protects conn + epConfig + reconnects. Read-locked during
+	// steady-state command dispatch (the fast Acquire path); write-locked
+	// only when dialing, reconnecting, or closing.
+	connMu     sync.RWMutex
+	conn       *cdp.Connection
+	epConfig   webview2.Config
 	reconnects []time.Time
 
+	// lastUsedNano is the wall-clock ns of the most recent Acquire. Stored
+	// atomically so the manager's gc loop doesn't have to take any session
+	// lock when scanning candidates.
+	lastUsedNano atomic.Int64
+
+	// stateMu protects the per-call sticky state (selection, default, snapshot,
+	// enabled). Held briefly by self-locking accessors; never held during a
+	// CDP Send.
+	stateMu      sync.Mutex
 	hasSelection bool
 	selection    Selection
+	hasDefault   bool
+	defaultSel   Selection
+	snapshot     *Snapshot
+	enabled      map[string]map[string]struct{}
 
-	// hasDefault and defaultSel track the page selection installed by
-	// pages.select. Empty-selector Attach calls return this in preference to
-	// FirstPageTarget so the chosen page sticks across subsequent UID-based
-	// tools (page.click, page.fill, …) without repeatedly threading targetId.
-	hasDefault bool
-	defaultSel Selection
-
-	// snapshot stores the most recent page.snapshot output. UID-based
-	// interaction tools resolve uids against this map. Cleared on reconnect
-	// (dropConnLocked) since backendNodeIds are scoped to the live target.
-	snapshot *Snapshot
-
-	// enabled tracks per-CDP-session domains that have been issued
-	// "<Domain>.enable". Cleared whenever the underlying conn is dropped
-	// (dropConnLocked) — Chrome resets domain state on reconnect, so the
-	// tracking has to follow.
-	enabled map[string]map[string]struct{}
-
-	// eventBufs holds the ring buffers fed by page.consoleLog /
-	// page.networkLog pump goroutines, keyed by (kind, cdpSessionID).
-	// Cleared on dropConnLocked since both the CDP sessions and the
-	// goroutines reading them are invalidated when the socket reconnects.
+	// eventMu protects the eventBufs map (the buffer values themselves carry
+	// their own internal mutex, so this is just for the map shape).
+	eventMu   sync.Mutex
 	eventBufs map[bufKey]*EventBuf
 }
 
@@ -132,77 +134,103 @@ type Snapshot struct {
 // ID returns the session identifier.
 func (s *Session) ID() string { return s.id }
 
-// LastUsed returns the session's last-acquired timestamp.
+// LastUsed returns the session's last-acquired timestamp. Lock-free read.
 func (s *Session) LastUsed() time.Time {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastUsed
+	n := s.lastUsedNano.Load()
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n)
 }
 
-// Acquire locks the session and ensures a live CDP connection. It returns the
-// connection plus a release function that unlocks the session — callers MUST
-// invoke release. The connection is NOT closed by release; that lives on
-// Close (or via the manager's GC).
+// Acquire ensures a live CDP connection for the requested endpoint and returns
+// it under a connMu *read* lock so multiple goroutines can dispatch CDP
+// commands concurrently against the same session. Callers MUST invoke the
+// returned release function when finished — it drops the read lock. Release
+// does NOT close the connection.
 //
-// If the previous connection was lost or the requested endpoint differs from
-// the cached one, a fresh dial is attempted, subject to the reconnect budget.
+// On a missing/dead/endpoint-mismatched connection, Acquire briefly takes the
+// write lock to dial. The reconnect budget gates this slow path.
 func (s *Session) Acquire(ctx context.Context, ep webview2.Config) (*cdp.Connection, func(), error) {
-	s.mu.Lock()
-	s.lastUsed = time.Now()
+	s.lastUsedNano.Store(time.Now().UnixNano())
 
-	// If endpoint changed mid-session, drop the old conn so we re-dial.
+	// Fast path: read-locked check. If the conn is healthy and the endpoint
+	// matches, return immediately.
+	s.connMu.RLock()
+	if s.conn != nil && endpointEqual(s.epConfig, ep) && !connDone(s.conn) {
+		conn := s.conn
+		return conn, makeReleaseRLock(&s.connMu), nil
+	}
+	s.connMu.RUnlock()
+
+	// Slow path: take the write lock, recheck (another goroutine may have
+	// dialed in the gap), then dial if still needed.
+	s.connMu.Lock()
+	if s.conn != nil && endpointEqual(s.epConfig, ep) && !connDone(s.conn) {
+		conn := s.conn
+		s.connMu.Unlock()
+		s.connMu.RLock()
+		return conn, makeReleaseRLock(&s.connMu), nil
+	}
+
+	// Endpoint changed mid-session: drop the old conn so we re-dial.
 	if !endpointEqual(s.epConfig, ep) && (s.epConfig.WSEndpoint != "" || s.epConfig.BrowserURL != "") {
+		s.dropConnLocked()
+	} else if s.conn != nil && connDone(s.conn) {
 		s.dropConnLocked()
 	}
 	s.epConfig = ep
 
-	// Liveness check: if the read pump exited, the conn is dead.
-	if s.conn != nil {
-		select {
-		case <-s.conn.Done():
-			s.dropConnLocked()
-		default:
-		}
+	if !s.canReconnectLocked() {
+		s.connMu.Unlock()
+		return nil, nil, fmt.Errorf("%w: session %q (%d in %s)",
+			ErrReconnectBudgetExhausted, s.id, s.cfg.ReconnectMax, s.cfg.ReconnectWindow)
 	}
-
-	if s.conn == nil {
-		if !s.canReconnectLocked() {
-			s.mu.Unlock()
-			return nil, nil, fmt.Errorf("%w: session %q (%d in %s)",
-				ErrReconnectBudgetExhausted, s.id, s.cfg.ReconnectMax, s.cfg.ReconnectWindow)
-		}
-		conn, err := dialEndpoint(ctx, ep)
-		if err != nil {
-			s.recordReconnectLocked() // count failed attempts too — they consume budget
-			s.mu.Unlock()
-			// Wrap both ErrDialFailed (so the dispatcher can branch on it) and
-			// the underlying err (so errors.Is(ctx.DeadlineExceeded) still fires).
-			return nil, nil, fmt.Errorf("%w: %w", ErrDialFailed, err)
-		}
-		s.conn = conn
-		s.recordReconnectLocked()
-		s.hasSelection = false
-		s.selection = Selection{}
-		s.hasDefault = false
-		s.defaultSel = Selection{}
-		s.snapshot = nil
+	conn, err := dialEndpoint(ctx, ep)
+	if err != nil {
+		s.recordReconnectLocked() // count failed attempts too — they consume budget
+		s.connMu.Unlock()
+		// Wrap both ErrDialFailed (so the dispatcher can branch on it) and
+		// the underlying err (so errors.Is(ctx.DeadlineExceeded) still fires).
+		return nil, nil, fmt.Errorf("%w: %w", ErrDialFailed, err)
 	}
+	s.conn = conn
+	s.recordReconnectLocked()
 
-	conn := s.conn
+	// dropConnLocked above already cleared per-connection state; nothing more
+	// to reset here. Downgrade to a read lock for the caller.
+	s.connMu.Unlock()
+	s.connMu.RLock()
+	return conn, makeReleaseRLock(&s.connMu), nil
+}
+
+// makeReleaseRLock returns a once-only RUnlock closure. Defensive against a
+// caller invoking release twice — that would panic on the underlying mutex.
+func makeReleaseRLock(mu *sync.RWMutex) func() {
 	released := false
-	release := func() {
+	return func() {
 		if released {
 			return
 		}
 		released = true
-		s.mu.Unlock()
+		mu.RUnlock()
 	}
-	return conn, release, nil
+}
+
+// connDone reports whether the read pump has exited (connection died).
+func connDone(c *cdp.Connection) bool {
+	select {
+	case <-c.Done():
+		return true
+	default:
+		return false
+	}
 }
 
 // Selected returns the cached selection for the given selector, if any.
-// Must be called with the session lock held (i.e. between Acquire and release).
 func (s *Session) Selected(targetID, urlPattern string) (Selection, bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if !s.hasSelection {
 		return Selection{}, false
 	}
@@ -213,8 +241,9 @@ func (s *Session) Selected(targetID, urlPattern string) (Selection, bool) {
 }
 
 // SetSelected caches the active selection for the given selector key.
-// Must be called with the session lock held.
 func (s *Session) SetSelected(targetID, urlPattern string, target cdp.TargetInfo, sessionID string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.hasSelection = true
 	s.selection = Selection{
 		SelectorTargetID:   targetID,
@@ -224,97 +253,103 @@ func (s *Session) SetSelected(targetID, urlPattern string, target cdp.TargetInfo
 	}
 }
 
-// InvalidateSelection clears the cached selection. Must be called with the
-// session lock held.
+// InvalidateSelection clears the cached selection.
 func (s *Session) InvalidateSelection() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.hasSelection = false
 	s.selection = Selection{}
 }
 
 // SetDefaultSelection records the sticky page chosen by pages.select. Empty
-// selectors fall back to this. Must be called with the session lock held.
+// selectors fall back to this.
 func (s *Session) SetDefaultSelection(target cdp.TargetInfo, cdpSessionID string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.hasDefault = true
 	s.defaultSel = Selection{Target: target, SessionID: cdpSessionID}
 }
 
-// DefaultSelection returns the current sticky default, if any. Must be called
-// with the session lock held.
+// DefaultSelection returns the current sticky default, if any.
 func (s *Session) DefaultSelection() (Selection, bool) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if !s.hasDefault {
 		return Selection{}, false
 	}
 	return s.defaultSel, true
 }
 
-// ClearDefaultSelection drops the sticky default. Must be called with the
-// session lock held.
+// ClearDefaultSelection drops the sticky default.
 func (s *Session) ClearDefaultSelection() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.hasDefault = false
 	s.defaultSel = Selection{}
 }
 
-// SetSnapshot stores the latest page.snapshot UID table. Must be called with
-// the session lock held.
+// SetSnapshot stores the latest page.snapshot UID table.
 func (s *Session) SetSnapshot(snap *Snapshot) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	s.snapshot = snap
 }
 
-// Snapshot returns the cached snapshot, or nil. Must be called with the
-// session lock held.
+// Snapshot returns the cached snapshot, or nil.
 func (s *Session) Snapshot() *Snapshot {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	return s.snapshot
 }
 
 // Close terminates the session. Idempotent.
 func (s *Session) Close() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.connMu.Lock()
+	defer s.connMu.Unlock()
 	s.dropConnLocked()
-	s.hasSelection = false
 }
 
+// dropConnLocked closes the connection and resets per-connection state. Must
+// be called with connMu write-locked. Briefly takes stateMu and eventMu to
+// reset their respective maps — order is connMu → stateMu → eventMu, never
+// reversed elsewhere, so this can't deadlock.
 func (s *Session) dropConnLocked() {
 	if s.conn != nil {
 		_ = s.conn.Close()
 		s.conn = nil
 	}
+	s.stateMu.Lock()
 	s.hasSelection = false
 	s.selection = Selection{}
 	s.hasDefault = false
 	s.defaultSel = Selection{}
 	s.snapshot = nil
 	s.enabled = nil
-	s.dropEventBufsLocked()
+	s.stateMu.Unlock()
+	s.eventMu.Lock()
+	s.eventBufs = nil
+	s.eventMu.Unlock()
 }
 
-// EnsureEnabled issues "<domain>.enable" exactly once per (cdpSessionID,
-// domain) pair for this Session. Subsequent calls are no-ops until the
-// connection is dropped (e.g. by reconnect). Must be called with the
-// session lock held — i.e. between Acquire and its release.
+// EnsureEnabled issues "<domain>.enable" once per (cdpSessionID, domain) pair
+// for this Session. Subsequent calls are no-ops until the connection is
+// dropped (e.g. by reconnect). Concurrent first-callers may both issue Send
+// — Chrome treats `<Domain>.enable` as idempotent, so this is harmless and
+// avoids serializing the entire dispatch path on a one-shot enable.
 func (s *Session) EnsureEnabled(ctx context.Context, sender Sender, cdpSessionID, domain string) error {
-	if s.enabled == nil {
-		s.enabled = map[string]map[string]struct{}{}
-	}
-	domains := s.enabled[cdpSessionID]
-	if domains == nil {
-		domains = map[string]struct{}{}
-		s.enabled[cdpSessionID] = domains
-	}
-	if _, ok := domains[domain]; ok {
+	if s.isEnabled(cdpSessionID, domain) {
 		return nil
 	}
 	if _, err := sender.Send(ctx, cdpSessionID, domain+".enable", nil); err != nil {
 		return err
 	}
-	domains[domain] = struct{}{}
+	s.markEnabled(cdpSessionID, domain)
 	return nil
 }
 
-// IsEnabled reports whether (cdpSessionID, domain) has been enabled. Only
-// useful for tests and diagnostics — production paths go through EnsureEnabled.
-// Must be called with the session lock held.
-func (s *Session) IsEnabled(cdpSessionID, domain string) bool {
+func (s *Session) isEnabled(cdpSessionID, domain string) bool {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
 	if s.enabled == nil {
 		return false
 	}
@@ -322,6 +357,26 @@ func (s *Session) IsEnabled(cdpSessionID, domain string) bool {
 	return ok
 }
 
+func (s *Session) markEnabled(cdpSessionID, domain string) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	if s.enabled == nil {
+		s.enabled = map[string]map[string]struct{}{}
+	}
+	if s.enabled[cdpSessionID] == nil {
+		s.enabled[cdpSessionID] = map[string]struct{}{}
+	}
+	s.enabled[cdpSessionID][domain] = struct{}{}
+}
+
+// IsEnabled reports whether (cdpSessionID, domain) has been enabled. Only
+// useful for tests and diagnostics — production paths go through EnsureEnabled.
+func (s *Session) IsEnabled(cdpSessionID, domain string) bool {
+	return s.isEnabled(cdpSessionID, domain)
+}
+
+// canReconnectLocked / recordReconnectLocked: must be called with connMu
+// write-locked since they mutate s.reconnects.
 func (s *Session) canReconnectLocked() bool {
 	cutoff := time.Now().Add(-s.cfg.ReconnectWindow)
 	pruned := s.reconnects[:0]

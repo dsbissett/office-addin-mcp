@@ -2,6 +2,67 @@
 
 ## Unreleased
 
+### Changed
+
+- **Concurrent CDP dispatch per session.** Previously
+  `Session.Acquire` took a `sync.Mutex` for the *entire* tool-call
+  duration, so an agent batching parallel calls (e.g.
+  `excel.readRange` + `excel.listTables` + `page.screenshot`) ran them
+  serially against the same session even though `cdp.Connection.Send`
+  is already concurrent-safe (each request gets its own response
+  channel keyed on the CDP id). Reasoning: for an "AI bridge" the
+  natural workload is fan-out reads, and the lock was the only thing
+  blocking near-linear speedup on independent CDP commands.
+  Concretely:
+  - `internal/session/session.go` — replaced the single `mu sync.Mutex`
+    with three narrower locks:
+    - `connMu sync.RWMutex` — guards the connection pointer +
+      endpoint config + reconnect budget. Read-locked on the
+      steady-state Acquire fast path so N goroutines share one dial;
+      write-locked only on dial / reconnect / close.
+    - `stateMu sync.Mutex` — guards the per-call sticky state
+      (selection cache, default selection, snapshot, enabled-domain
+      bookkeeping). Self-locked by `Selected` / `SetSelected` /
+      `DefaultSelection` / `SetSnapshot` / etc. so callers no longer
+      need to hold any "outer" lock.
+    - `eventMu sync.Mutex` — guards the eventBufs map shape (the
+      buffer values keep their own internal mutex).
+    `Acquire` now uses the standard double-checked-locking pattern:
+    RLock → fast path return; on a miss drop and Lock → recheck → dial
+    → downgrade back to RLock for the caller's release. The release
+    closure is once-only so a defensive double-call doesn't panic the
+    underlying `sync.RWMutex`.
+  - `internal/session/session.go` — `lastUsed time.Time` →
+    `lastUsedNano atomic.Int64`, so `LastUsed()` (called by the
+    manager's gc loop on every tick) is lock-free and doesn't contend
+    with Acquire.
+  - `internal/session/session.go` — `EnsureEnabled` no longer
+    serializes the entire dispatch path on the one-shot
+    `<Domain>.enable` call. Fast path: cheap `stateMu` check + return.
+    Slow path: send the enable *outside* any session lock, then mark
+    enabled. Concurrent first-callers may both Send — Chrome treats
+    `<Domain>.enable` as idempotent in practice, so the duplicate is
+    harmless and avoids a serial point that would defeat F5.
+  - `internal/session/session.go` — `dropConnLocked` (called only with
+    `connMu` write-locked) now briefly takes `stateMu` and `eventMu`
+    to clear their respective maps. Lock order is enforced as
+    connMu → stateMu → eventMu everywhere; nothing else takes locks
+    in the reverse direction, so no deadlock is possible.
+  - `internal/session/eventbuf.go` — `EventBuf` and
+    `MarkEventPumping` are now self-locking on `eventMu`. The dead
+    `dropEventBufsLocked` helper was inlined into `dropConnLocked`.
+  - `internal/session/enable_test.go` — the reconnect-clears test
+    used the old `s.mu`; updated to `s.connMu` to match the new shape.
+  - `internal/session/session_test.go` — new
+    `TestConcurrentAcquireDoesNotSerialize` runs 16 goroutines × 50
+    Acquire/release cycles each (each holds the read lock for ~1ms to
+    simulate a CDP send) and asserts `fakeBrowser.dialCount == 1`,
+    proving 800 parallel acquires share one dial. Existing tests
+    (`AcquireDialsOnceAndReuses`, `ReconnectBudgetExhaustion`,
+    `StickySelectionCache`, `ReconnectClearsSelectionCache`,
+    `SnapshotCache`, the EnsureEnabled trio) all pass unchanged
+    against the new shape.
+
 ### Added
 
 - **`--cdp-domains` flag for slicing the raw CDP surface.** When users

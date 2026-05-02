@@ -59,10 +59,11 @@ func TestEnsureEnabledClearedOnReconnect(t *testing.T) {
 	}
 
 	// Simulate the conn-loss path that dispatcher.Acquire takes when the
-	// underlying socket dies. dropConnLocked is the canonical clearing point.
-	s.mu.Lock()
+	// underlying socket dies. dropConnLocked is the canonical clearing point;
+	// it must be called with connMu write-locked.
+	s.connMu.Lock()
 	s.dropConnLocked()
-	s.mu.Unlock()
+	s.connMu.Unlock()
 
 	if s.IsEnabled("cdp-1", "Page") {
 		t.Error("expected enabled bookkeeping wiped after dropConnLocked")

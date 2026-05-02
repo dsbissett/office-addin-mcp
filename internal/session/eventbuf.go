@@ -171,8 +171,11 @@ type bufKey struct {
 
 // EventBuf returns the buffer for (kind, cdpSessionID), creating it with
 // the supplied max on first access. Existing buffers honor the new max via
-// SetMax. Must be called with the session lock held.
+// SetMax. Self-locking on eventMu — callers do not need to hold any other
+// session lock.
 func (s *Session) EventBuf(kind EventBufKind, cdpSessionID string, max int) *EventBuf {
+	s.eventMu.Lock()
+	defer s.eventMu.Unlock()
 	if s.eventBufs == nil {
 		s.eventBufs = map[bufKey]*EventBuf{}
 	}
@@ -191,16 +194,8 @@ func (s *Session) EventBuf(kind EventBufKind, cdpSessionID string, max int) *Eve
 
 // MarkEventPumping atomically checks whether a pump is already running for
 // (kind, cdpSessionID) and, if not, marks it as running. Returns true when
-// the caller should start the pump goroutine. Must be called with the
-// session lock held.
+// the caller should start the pump goroutine. Self-locking.
 func (s *Session) MarkEventPumping(kind EventBufKind, cdpSessionID string, max int) bool {
 	buf := s.EventBuf(kind, cdpSessionID, max)
 	return buf.markPumpingLocked()
-}
-
-// dropEventBufsLocked clears every buffer. Invoked from dropConnLocked when
-// the underlying CDP connection is replaced — cdpSessionIDs and the pump
-// goroutines reading them all become invalid at that point.
-func (s *Session) dropEventBufsLocked() {
-	s.eventBufs = nil
 }
