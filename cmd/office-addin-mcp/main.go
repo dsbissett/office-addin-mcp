@@ -45,6 +45,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		wsEndpoint     = fs.String("ws-endpoint", "", "Direct browser WebSocket endpoint (overrides --browser-url)")
 		logFile        = fs.String("log-file", "", "Append diagnostic logs to this file (defaults to stderr)")
 		logLevel       = fs.String("log-level", "info", "Minimum slog level: debug, info, warn, error")
+		launchExcel    = fs.Bool("launch-excel", false, "On startup, if no CDP endpoint is reachable, detect the add-in project under cwd and run addin.launch automatically. Equivalent to calling addin.ensureRunning at boot.")
 		allowDangerous = fs.Bool("allow-dangerous-cdp", false, "Allow CDP methods marked dangerous (Browser.crash, Runtime.terminateExecution, ...). May also be set via "+dangerousEnvVar+"=1.")
 		exposeRawCDP   = fs.Bool("expose-raw-cdp", false, "Also register the ~411 code-generated cdp.* tools (raw Chrome DevTools Protocol). May also be set via "+exposeRawCDPEnvVar+"=1.")
 	)
@@ -94,26 +95,60 @@ func run(args []string, stdout, stderr io.Writer) int {
 	// below; this defer covers the normal Run-returns path.
 	defer launch.StopAll()
 
+	endpoint := webview2.Config{
+		WSEndpoint: *wsEndpoint,
+		BrowserURL: *browserURL,
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	// --launch-excel: probe the configured port and, if nothing's listening,
+	// detect+launch from cwd before the MCP server starts. Skipped silently
+	// when the user already pinned an explicit endpoint — they presumably
+	// know what they're doing.
+	if *launchExcel && endpoint.WSEndpoint == "" && endpoint.BrowserURL == "" {
+		if launched, err := autoLaunchExcel(ctx); err != nil {
+			slog.Warn("--launch-excel could not bring up Excel", "error", err)
+		} else if launched != "" {
+			endpoint.BrowserURL = launched
+			slog.Info("--launch-excel: CDP endpoint ready", "browser_url", launched)
+		}
+	}
+
 	srv := mcpserver.NewServer(mcpserver.Options{
-		Name:    "office-addin-mcp",
-		Version: version,
-		Endpoint: webview2.Config{
-			WSEndpoint: *wsEndpoint,
-			BrowserURL: *browserURL,
-		},
+		Name:           "office-addin-mcp",
+		Version:        version,
+		Endpoint:       endpoint,
 		AllowDangerous: dangerous,
 		Registry:       mcpserver.DefaultRegistry(rawCDP),
 		Sessions:       sessMgr,
 	})
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	if err := srv.Run(ctx); err != nil {
 		slog.Error("mcp server exited with error", "error", err)
 		return 1
 	}
 	return 0
+}
+
+// autoLaunchExcel implements the --launch-excel startup hook. Returns the
+// resolved CDP browser URL on success, "" if no add-in could be found
+// (caller treats that as a soft warning — the server still starts).
+func autoLaunchExcel(ctx context.Context) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getcwd: %w", err)
+	}
+	project, err := launch.DetectAddin(cwd)
+	if err != nil {
+		return "", fmt.Errorf("detect under %s: %w", cwd, err)
+	}
+	res, _, err := launch.LaunchIfNeeded(ctx, project, launch.LaunchOptions{})
+	if err != nil {
+		return "", err
+	}
+	return res.CDPURL, nil
 }
 
 func parseLogLevel(s string) (slog.Level, error) {
@@ -149,6 +184,7 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --ws-endpoint           Direct browser WebSocket URL (overrides --browser-url)")
 	fmt.Fprintln(w, "  --log-file              Append diagnostics here instead of stderr")
 	fmt.Fprintln(w, "  --log-level             slog level: debug|info|warn|error (default info)")
+	fmt.Fprintln(w, "  --launch-excel          Auto-detect+launch the add-in under cwd at startup if no CDP endpoint is reachable")
 	fmt.Fprintln(w, "  --allow-dangerous-cdp   Permit dangerous CDP methods (env: "+dangerousEnvVar+")")
 	fmt.Fprintln(w, "  --expose-raw-cdp        Register the raw cdp.* tool surface (env: "+exposeRawCDPEnvVar+")")
 	fmt.Fprintln(w, "  --version               Print version and exit")

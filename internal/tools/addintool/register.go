@@ -9,6 +9,7 @@ import "github.com/dsbissett/office-addin-mcp/internal/tools"
 // Register adds every addin.* runtime tool to the registry. Lifecycle tools
 // (addin.detect/launch/stop) are registered separately by lifecycletool.
 func Register(r *tools.Registry) {
+	r.MustRegister(EnsureRunning())
 	r.MustRegister(ListTargets())
 	r.MustRegister(ContextInfo())
 	r.MustRegister(OpenDialog())

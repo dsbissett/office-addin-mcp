@@ -164,6 +164,43 @@ func LaunchExcel(ctx context.Context, project *Project, opts LaunchOptions) (*La
 	return res, nil
 }
 
+// LaunchIfNeeded returns a LaunchResult for the configured port without
+// spawning Excel if a CDP-enabled instance is already responding on that
+// port. If the probe fails, falls through to LaunchExcel.
+//
+// The returned `Source` is "preexisting" when no spawn occurred, "launched"
+// when this call started Excel. Useful for an MCP entry tool like
+// addin.ensureRunning where the agent doesn't care which path was taken,
+// only that the endpoint is now reachable.
+func LaunchIfNeeded(ctx context.Context, project *Project, opts LaunchOptions) (*LaunchResult, string, error) {
+	port := opts.Port
+	if port <= 0 {
+		port = defaultCDPPort
+	}
+	cdpURL := fmt.Sprintf("http://localhost:%d", port)
+	if probe := ProbeCDPEndpoint(ctx, cdpURL, cdpProbeTimeout); probe.OK {
+		manifestPath := ""
+		if project != nil {
+			manifestPath = project.ManifestPath
+		}
+		return &LaunchResult{
+			CDPURL:       cdpURL,
+			ManifestPath: manifestPath,
+		}, "preexisting", nil
+	}
+	if project == nil {
+		return nil, "", &LaunchError{
+			Reason:  ReasonLaunchFailed,
+			Message: fmt.Sprintf("no CDP endpoint at %s and no add-in project supplied to launch", cdpURL),
+		}
+	}
+	res, err := LaunchExcel(ctx, project, opts)
+	if err != nil {
+		return nil, "", err
+	}
+	return res, "launched", nil
+}
+
 // StopExcel terminates the active launch for the given manifest. Returns nil
 // if there is no active launch (idempotent).
 func StopExcel(manifestPath string) error {

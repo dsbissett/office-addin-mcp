@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Added
+
+- **`addin.ensureRunning` tool + `--launch-excel` startup flag.** Bringing
+  Excel up with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"`
+  and then sideloading the manifest by hand was the single biggest first-run
+  friction point — agents that hit a closed Excel had to chain `addin.detect` +
+  `addin.launch` and figure out from text which step was needed. Auto-launch
+  is now opt-in via either entry point. Reasoning: probe-first means we never
+  spawn Excel when one is already reachable, so the new behavior is safe to
+  enable by default in a script while still respecting an explicit
+  `--browser-url` / `--ws-endpoint`. Concretely:
+  - `internal/launch/launcher.go` — new `LaunchIfNeeded(ctx, project, opts)`
+    helper that probes `http://localhost:<port>/json/version` first (using
+    the existing `ProbeCDPEndpoint`) and only delegates to `LaunchExcel`
+    when the probe fails. Returns a `(result, source, err)` triple where
+    `source` is `"preexisting"` or `"launched"` so callers can surface the
+    distinction without needing to know which path ran.
+  - `internal/tools/addintool/ensurerunning.go` *(new)* — `addin.ensureRunning`
+    tool. Probes the configured port; if reachable, returns
+    `{source: "preexisting", cdpUrl, manifestPath}` without spawning. If not
+    reachable and the project was detected from `cwd`, runs the same
+    `office-addin-debugging` path as `addin.launch`, then calls
+    `RunEnv.SetEndpoint`/`SetManifest` so subsequent tool calls route to the
+    new Excel. When detection fails, returns `addin_not_found` with a
+    `RecoveryHint` pointing at `addin.detect` and
+    `Details.recoverableViaTool: "addin.detect"`. `LaunchError`-wrapped
+    failures get per-reason `RecoveryHint`s
+    (`unsupported-platform` → "WebView2 sideloading is Windows-only…",
+    `launcher-missing` → "install office-addin-debugging…",
+    `port-already-configured` → "unset WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS…",
+    `cdp-not-ready` / `dev-server-not-ready` → "retry with longer timeout").
+  - `internal/tools/addintool/register.go` — registers `EnsureRunning()`.
+  - `cmd/office-addin-mcp/main.go` — new `--launch-excel` flag plus an
+    `autoLaunchExcel` helper. When set AND neither `--browser-url` nor
+    `--ws-endpoint` was supplied, the binary detects the project from
+    process cwd and calls `LaunchIfNeeded` before starting the MCP server,
+    threading the resulting `cdpUrl` into `webview2.Config.BrowserURL`.
+    Failures are logged via `slog.Warn` rather than fatal — the server
+    still starts so the agent can call `addin.ensureRunning` interactively
+    or fall back to manual launch.
+  - `internal/launch/launcher_test.go` *(new)* — covers the
+    "preexisting endpoint" path (httptest stub on a real local port) and
+    the "no probe + nil project" guard rail.
+  - `CLAUDE.md` — replaced the "Auto-launch is not implemented; do not add
+    it without the user asking" note with an entry describing the opt-in
+    `--launch-excel` flag and `addin.ensureRunning` tool, with the
+    instruction not to auto-launch unconditionally and to honor explicit
+    endpoint flags.
+
 ### Changed
 
 - **Actionable error envelopes (recoveryHint + standard Details keys).**
