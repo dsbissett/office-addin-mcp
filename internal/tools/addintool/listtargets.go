@@ -28,9 +28,15 @@ type listTargetsParams struct {
 func ListTargets() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.listTargets",
+		Title:       "List CDP Targets",
 		Description: "List CDP targets classified by manifest surface (taskpane / content / dialog / cf-runtime). Falls back to URL heuristics when no add-in manifest is loaded. Use the returned targetId with any tool that accepts a targetId selector.",
 		Schema:      json.RawMessage(listTargetsSchema),
-		Run:         runListTargets,
+		Annotations: &tools.Annotations{
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		Run: runListTargets,
 	}
 }
 

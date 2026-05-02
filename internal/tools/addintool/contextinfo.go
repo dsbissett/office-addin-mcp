@@ -47,9 +47,15 @@ type contextInfoParams struct {
 func ContextInfo() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.contextInfo",
+		Title:       "Office Context Info",
 		Description: "Report Office.context identity (host, platform, languages, theme, document URL) and probe requirement sets via Office.context.requirements.isSetSupported. Defaults probe addin.StandardRequirementSets plus manifest-declared sets.",
 		Schema:      json.RawMessage(contextInfoSchema),
-		Run:         runContextInfo,
+		Annotations: &tools.Annotations{
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		Run: runContextInfo,
 	}
 }
 

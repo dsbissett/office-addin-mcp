@@ -4,6 +4,63 @@
 
 ### Added
 
+- **MCP-native structured results (Title, OutputSchema, Annotations,
+  StructuredContent).** Our MCP adapter previously registered tools with
+  Name + Description + InputSchema only and emitted every result as
+  `TextContent` (or `ImageContent` for screenshots). The current spec
+  (https://modelcontextprotocol.io/specification/2025-11-25/server/tools)
+  supports `title`, `outputSchema`, `annotations` (readOnly/destructive/
+  idempotent/openWorld hints) and `structuredContent` for typed return
+  payloads — all of which let MCP clients display tools more usefully and
+  let LLMs branch on machine-validated output. Reasoning: shipping the
+  infrastructure now (a) gives the adapter a stable contract, (b) means
+  every future tool can opt into structured output without churning the
+  adapter again, and (c) lets us surface read-only / idempotent hints on
+  the safe tools so clients can skip confirmation prompts on probes like
+  `addin.status`. Concretely:
+  - `internal/tools/registry.go` — extended `Tool` with `Title string`,
+    `OutputSchema json.RawMessage`, and `Annotations *Annotations`. New
+    sibling `Annotations` type mirrors the SDK's `ToolAnnotations`
+    (Title, ReadOnlyHint, DestructiveHint *bool, IdempotentHint,
+    OpenWorldHint *bool) — pointer-bool fields keep the spec's "default
+    true" semantics so leaving them nil inherits the default. Added a
+    `BoolPtr(v) *bool` one-liner so annotation sites stay terse.
+  - `internal/mcp/adapter.go` — `registerTool` copies Title,
+    OutputSchema, and Annotations onto `sdk.Tool` (forwarding the
+    annotation pointer fields verbatim). `makeHandler` now closes over
+    the full `*tools.Tool` so it can pass a `hasOutputSchema bool` into
+    `envelopeToResult`. `envelopeToResult` populates
+    `res.StructuredContent = env.Data` whenever that flag is set, while
+    still emitting the JSON-encoded `TextContent` block for clients that
+    don't read structured output (per the spec recommendation that
+    servers emit both for backwards compat).
+  - `internal/tools/addintool/status.go` — added a complete
+    `OutputSchema` (the JSON-Schema description of `statusOutput`) so
+    `addin.status` is the demonstration of typed return data. Also gets
+    `Title: "Add-in Status"`, `ReadOnlyHint: true`, `IdempotentHint: true`,
+    `DestructiveHint: false`.
+  - `internal/tools/addintool/{listtargets,contextinfo,ensurerunning}.go`,
+    `internal/tools/lifecycletool/{detect,launch,stop}.go` — populated
+    `Title` and `Annotations` for the lifecycle/probe surface. Probes
+    (`addin.detect`, `addin.listTargets`, `addin.contextInfo`) get
+    `ReadOnlyHint: true` so MCP clients can auto-allow them; lifecycle
+    tools (`addin.launch`, `addin.ensureRunning`, `addin.stop`) get
+    `IdempotentHint: true` and leave `DestructiveHint` at the spec
+    default of true (or explicit true on `addin.stop`) so clients can
+    prompt before re-firing them.
+  - `internal/mcp/adapter_test.go` — new
+    `TestEnvelopeToResultEmitsStructuredContent` exercises the
+    structured-vs-text branch directly; new
+    `TestListToolsExposesAnnotationsAndOutputSchema` round-trips a tool
+    with all the new fields through SDK `tools/list` and asserts the
+    client sees `Title`, `OutputSchema`, and `Annotations.ReadOnlyHint`.
+
+  Codegen for the ~411 `cdp.*` tools (`cmd/gen-cdp-tools/template.go`
+  enrichment with annotations + per-method outputSchema) is deferred to
+  a follow-up — those tools still register with the now-baseline
+  Name/Description/Schema shape, but the rest of the surface uses the
+  new fields.
+
 - **Windows WebView2 endpoint scan + `addin.status` aggregator.** The
   Windows discovery scan was a stub (`scan_windows.go` returning
   `ErrNotFound`), so a user who launched Excel without passing

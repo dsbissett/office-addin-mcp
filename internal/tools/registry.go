@@ -15,7 +15,21 @@ import (
 type Tool struct {
 	Name        string
 	Description string
-	Schema      json.RawMessage
+	// Title is a short human-readable display name shown to MCP clients —
+	// per the spec, display name precedence is title → annotations.title →
+	// name. Optional; clients fall back to Name when empty.
+	Title  string
+	Schema json.RawMessage
+	// OutputSchema, when non-empty, is forwarded to the MCP client so it
+	// can validate / type the tool result. Triggers StructuredContent
+	// emission in the adapter — clients that support structured output
+	// receive a typed object alongside the JSON-encoded TextContent.
+	OutputSchema json.RawMessage
+	// Annotations are MCP ToolAnnotations hint flags. Optional. Always
+	// declare ReadOnlyHint=true on read-only probes (status, list, get) —
+	// it lets clients display the tool differently and matters for safety
+	// gating on destructive flows.
+	Annotations *Annotations
 	Run         func(ctx context.Context, params json.RawMessage, env *RunEnv) Result
 
 	// NoSession marks lifecycle tools (addin.detect, addin.launch, addin.stop)
@@ -26,6 +40,22 @@ type Tool struct {
 
 	compiled *jsonschema.Schema
 }
+
+// Annotations mirrors the MCP-spec ToolAnnotations hint flags. Pointer
+// fields follow the spec default of true; leave nil to inherit, set
+// explicitly to override. The adapter forwards each field verbatim to
+// sdk.ToolAnnotations.
+type Annotations struct {
+	Title           string
+	ReadOnlyHint    bool
+	DestructiveHint *bool
+	IdempotentHint  bool
+	OpenWorldHint   *bool
+}
+
+// BoolPtr is a one-liner for the pointer-bool fields in Annotations. Saves
+// every annotation site from declaring its own var.
+func BoolPtr(v bool) *bool { return &v }
 
 // Registry holds the active tool set. It is safe for concurrent reads after
 // MustRegister calls have completed during init/wireup.

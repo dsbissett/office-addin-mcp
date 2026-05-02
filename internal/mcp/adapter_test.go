@@ -203,6 +203,97 @@ func TestImageFromData_RejectsNonImage(t *testing.T) {
 	}
 }
 
+func TestEnvelopeToResultEmitsStructuredContent(t *testing.T) {
+	// Tools that declare an OutputSchema get StructuredContent populated
+	// alongside the JSON-encoded TextContent. Tools without OutputSchema
+	// keep TextContent only.
+	data := map[string]any{"answer": float64(42), "ok": true}
+	envOK := tools.Envelope{OK: true, Data: data}
+
+	withSchema := envelopeToResult(envOK, true)
+	if withSchema.StructuredContent == nil {
+		t.Errorf("StructuredContent nil with emitStructured=true")
+	}
+	asMap, ok := withSchema.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatalf("StructuredContent type=%T, want map[string]any", withSchema.StructuredContent)
+	}
+	if asMap["answer"] != float64(42) {
+		t.Errorf("StructuredContent.answer=%v, want 42", asMap["answer"])
+	}
+	// TextContent fallback should still be there.
+	if len(withSchema.Content) != 1 {
+		t.Fatalf("len(Content)=%d, want 1 (text fallback)", len(withSchema.Content))
+	}
+
+	withoutSchema := envelopeToResult(envOK, false)
+	if withoutSchema.StructuredContent != nil {
+		t.Errorf("StructuredContent=%v with emitStructured=false, want nil", withoutSchema.StructuredContent)
+	}
+}
+
+func TestListToolsExposesAnnotationsAndOutputSchema(t *testing.T) {
+	// Round-trip a tool with Title, Annotations, and OutputSchema through
+	// the SDK's tools/list to make sure the adapter forwards each field.
+	reg := tools.NewRegistry()
+	reg.MustRegister(tools.Tool{
+		Name:         "fake.annotated",
+		Title:        "Fake Annotated",
+		Description:  "exercise annotations + output schema",
+		Schema:       json.RawMessage(`{"type":"object","additionalProperties":false}`),
+		OutputSchema: json.RawMessage(`{"type":"object","properties":{"x":{"type":"number"}}}`),
+		Annotations: &tools.Annotations{
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		NoSession: true,
+		Run: func(_ context.Context, _ json.RawMessage, _ *tools.RunEnv) tools.Result {
+			return tools.OK(map[string]any{"x": float64(1)})
+		},
+	})
+	mgr := session.NewManager(session.Config{})
+	defer mgr.Close()
+	srv := NewServer(Options{Name: "test", Version: "v0", Registry: reg, Sessions: mgr})
+
+	ctx := context.Background()
+	st, ct := sdk.NewInMemoryTransports()
+	ss, err := srv.SDKServer().Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer func() { _ = ss.Close() }()
+	client := sdk.NewClient(&sdk.Implementation{Name: "client", Version: "v0"}, nil)
+	cs, err := client.Connect(ctx, ct, nil)
+	if err != nil {
+		t.Fatalf("client connect: %v", err)
+	}
+	defer func() { _ = cs.Close() }()
+
+	res, err := cs.ListTools(ctx, nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	var found *sdk.Tool
+	for _, tl := range res.Tools {
+		if tl.Name == "fake.annotated" {
+			found = tl
+		}
+	}
+	if found == nil {
+		t.Fatalf("fake.annotated not in tools/list")
+	}
+	if found.Title != "Fake Annotated" {
+		t.Errorf("Title=%q, want Fake Annotated", found.Title)
+	}
+	if found.OutputSchema == nil {
+		t.Error("OutputSchema nil, want present")
+	}
+	if found.Annotations == nil || !found.Annotations.ReadOnlyHint {
+		t.Errorf("Annotations.ReadOnlyHint not true; annotations=%+v", found.Annotations)
+	}
+}
+
 func TestCallToolUnknownToolReturnsErrorEnvelope(t *testing.T) {
 	cs, cleanup := newTestServer(t)
 	defer cleanup()

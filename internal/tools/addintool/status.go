@@ -20,6 +20,45 @@ const statusSchema = `{
   "additionalProperties": false
 }`
 
+const statusOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "addin.status result",
+  "type": "object",
+  "required": ["endpoint", "manifest", "recoveryHints"],
+  "properties": {
+    "endpoint": {
+      "type": "object",
+      "required": ["reachable"],
+      "properties": {
+        "source":     {"type": "string"},
+        "browserUrl": {"type": "string"},
+        "wsUrl":      {"type": "string"},
+        "reachable":  {"type": "boolean"},
+        "error":      {"type": "string"}
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "required": ["loaded"],
+      "properties": {
+        "loaded":      {"type": "boolean"},
+        "id":          {"type": "string"},
+        "displayName": {"type": "string"},
+        "path":        {"type": "string"},
+        "hosts":       {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "targets": {
+      "type": "array",
+      "items": {"type": "object"}
+    },
+    "recoveryHints": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  }
+}`
+
 type statusParams struct {
 	IncludeInternal bool `json:"includeInternal,omitempty"`
 }
@@ -59,11 +98,18 @@ type statusOutput struct {
 // call instead of inferring from envelope.error.
 func Status() tools.Tool {
 	return tools.Tool{
-		Name:        "addin.status",
-		Description: "Aggregate health snapshot: which CDP endpoint we resolved, whether it's reachable, the live target list, the active manifest, and recoveryHints[] for any missing piece. The first call agents should make on a fresh shell.",
-		Schema:      json.RawMessage(statusSchema),
-		NoSession:   true,
-		Run:         runStatus,
+		Name:         "addin.status",
+		Title:        "Add-in Status",
+		Description:  "Aggregate health snapshot: which CDP endpoint we resolved, whether it's reachable, the live target list, the active manifest, and recoveryHints[] for any missing piece. The first call agents should make on a fresh shell.",
+		Schema:       json.RawMessage(statusSchema),
+		OutputSchema: json.RawMessage(statusOutputSchema),
+		Annotations: &tools.Annotations{
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		NoSession: true,
+		Run:       runStatus,
 	}
 }
 

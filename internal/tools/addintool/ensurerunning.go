@@ -44,10 +44,16 @@ type ensureRunningParams struct {
 func EnsureRunning() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.ensureRunning",
+		Title:       "Ensure Excel Is Running",
 		Description: "Probe the WebView2 CDP endpoint and, if unreachable, detect+launch the project under cwd. Returns once the endpoint is reachable. Combines addin.detect + addin.launch into one idempotent call so the agent can recover from a closed Excel without a multi-step dance.",
 		Schema:      json.RawMessage(ensureRunningSchema),
-		NoSession:   true,
-		Run:         runEnsureRunning,
+		Annotations: &tools.Annotations{
+			IdempotentHint: true,
+			// May start an Excel process — leave DestructiveHint at the
+			// spec default of true so MCP clients can prompt before re-run.
+		},
+		NoSession: true,
+		Run:       runEnsureRunning,
 	}
 }
 

@@ -33,10 +33,15 @@ type stopParams struct {
 func Stop() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.stop",
+		Title:       "Stop Add-in",
 		Description: "Stop a previously launched Office add-in. Runs office-addin-debugging stop and tears down any dev-server child it spawned. Set all=true to stop every tracked launch.",
 		Schema:      json.RawMessage(stopSchema),
-		NoSession:   true,
-		Run:         runStop,
+		Annotations: &tools.Annotations{
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(true), // explicit: kills child processes
+		},
+		NoSession: true,
+		Run:       runStop,
 	}
 }
 

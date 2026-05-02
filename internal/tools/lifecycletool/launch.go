@@ -43,10 +43,17 @@ type launchParams struct {
 func Launch() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.launch",
+		Title:       "Launch Add-in",
 		Description: "Launch Excel with the detected add-in sideloaded and CDP enabled. Spawns the project's dev server if needed and runs office-addin-debugging start. On success, reconfigures the server's default CDP endpoint to the new launch.",
 		Schema:      json.RawMessage(launchSchema),
-		NoSession:   true,
-		Run:         runLaunch,
+		Annotations: &tools.Annotations{
+			IdempotentHint: true,
+			// Spawns Excel + a dev-server process — leave DestructiveHint
+			// at the spec default of true so MCP clients can prompt before
+			// auto-firing this tool.
+		},
+		NoSession: true,
+		Run:       runLaunch,
 	}
 }
 

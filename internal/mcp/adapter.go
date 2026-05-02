@@ -22,12 +22,27 @@ func (s *Server) registerTool(t *tools.Tool) {
 	sdkTool := &sdk.Tool{
 		Name:        t.Name,
 		Description: t.Description,
+		Title:       t.Title,
 		InputSchema: t.Schema,
 	}
-	s.sdk.AddTool(sdkTool, s.makeHandler(t.Name))
+	if len(t.OutputSchema) > 0 {
+		sdkTool.OutputSchema = t.OutputSchema
+	}
+	if t.Annotations != nil {
+		sdkTool.Annotations = &sdk.ToolAnnotations{
+			Title:           t.Annotations.Title,
+			ReadOnlyHint:    t.Annotations.ReadOnlyHint,
+			DestructiveHint: t.Annotations.DestructiveHint,
+			IdempotentHint:  t.Annotations.IdempotentHint,
+			OpenWorldHint:   t.Annotations.OpenWorldHint,
+		}
+	}
+	s.sdk.AddTool(sdkTool, s.makeHandler(t))
 }
 
-func (s *Server) makeHandler(toolName string) sdk.ToolHandler {
+func (s *Server) makeHandler(t *tools.Tool) sdk.ToolHandler {
+	hasOutputSchema := len(t.OutputSchema) > 0
+	toolName := t.Name
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
 		params := req.Params.Arguments
 		env := s.disp.Dispatch(ctx, tools.Request{
@@ -35,7 +50,7 @@ func (s *Server) makeHandler(toolName string) sdk.ToolHandler {
 			Params:   params,
 			Endpoint: s.currentEndpoint(),
 		})
-		return envelopeToResult(env), nil
+		return envelopeToResult(env, hasOutputSchema), nil
 	}
 }
 
@@ -49,7 +64,11 @@ func (s *Server) makeHandler(toolName string) sdk.ToolHandler {
 //     (`{mimeType, data}` with image/* mime), we emit an ImageContent block
 //     so MCP clients can render it directly. Otherwise the JSON-encoded data
 //     rides as a TextContent block.
-func envelopeToResult(env tools.Envelope) *sdk.CallToolResult {
+//   - When emitStructured is true (the tool declared an OutputSchema), the
+//     same data is also attached as StructuredContent — MCP clients that
+//     support structured output get a typed object; older clients still see
+//     the JSON-encoded TextContent.
+func envelopeToResult(env tools.Envelope, emitStructured bool) *sdk.CallToolResult {
 	res := &sdk.CallToolResult{
 		Meta: sdk.Meta{DiagnosticsMetaKey: env.Diagnostics},
 	}
@@ -65,6 +84,9 @@ func envelopeToResult(env tools.Envelope) *sdk.CallToolResult {
 			return res
 		}
 		res.Content = []sdk.Content{&sdk.TextContent{Text: string(body)}}
+		if emitStructured {
+			res.StructuredContent = env.Data
+		}
 		return res
 	}
 	res.IsError = true

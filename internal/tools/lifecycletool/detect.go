@@ -34,10 +34,16 @@ type detectParams struct {
 func Detect() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.detect",
+		Title:       "Detect Add-in Project",
 		Description: "Detect an Office Excel add-in project from a working directory. Walks up to 5 levels looking for package.json and a workbook-scoped manifest.{xml,json}. Returns project metadata used by addin.launch.",
 		Schema:      json.RawMessage(detectSchema),
-		NoSession:   true,
-		Run:         runDetect,
+		Annotations: &tools.Annotations{
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		NoSession: true,
+		Run:       runDetect,
 	}
 }
 
