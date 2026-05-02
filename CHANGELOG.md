@@ -4,6 +4,67 @@
 
 ### Changed
 
+- **Headless-Chrome integration test gated behind `-tags integration`.**
+  `internal/cdp/integration_test.go` previously ran in non-`-short` mode
+  and was the source of intermittent CI failures on Windows runners
+  (the `DevToolsActivePort` wait raced with how Windows-Chrome wrote the
+  file). Reasoning: this test is genuinely useful as a local smoke when
+  Chrome is on the box, but it has no business gating CI green/red
+  every time a runner image changes. Build-tagging it makes the
+  default `go test ./...` skip it entirely while devs still get the
+  coverage with one extra flag.
+  - `internal/cdp/integration_test.go` — added a `//go:build integration`
+    build tag at the top of the file plus a doc comment pointing at the
+    `go test -tags integration ./internal/cdp/...` invocation. Removed
+    the now-redundant `if testing.Short() { t.Skip(...) }` guard in
+    `TestEvaluate_AgainstHeadlessChrome` since the build tag is now the
+    single source of truth for whether the test runs.
+
+### Added
+
+- **Performance benchmarks for the dispatcher and session hot paths.**
+  Until F9 the codebase had zero `Benchmark*` functions, so any perf
+  regression in the dispatcher or session-locking refactor (F5) had to
+  be detected by feel. Reasoning: a small set of micro-benchmarks
+  covering the per-call floor (NoSession dispatch), the F5 contract
+  (parallel Acquire), the F5 fast path (warm Acquire), and the inner
+  hot-spots (selection cache + EnsureEnabled hit) gives a number to
+  track without inventing fixtures. Concretely:
+  - `internal/tools/dispatcher_bench_test.go` *(new)* — three benches
+    that don't need a CDP connection: `BenchmarkDispatchNoSession`
+    (lifecycle-tool floor: lookup + schema validate + request-id +
+    finalize), `BenchmarkDispatchValidationError` (schema-violation
+    fast-fail path), `BenchmarkMarshalEnvelope` (the JSON encode the
+    adapter pays on every result, including the diagnostics block).
+  - `internal/session/session_bench_test.go` *(new)* — four benches
+    against the existing `fakeBrowser`: `BenchmarkSessionAcquireWarm`
+    (steady-state RLock fast path), `BenchmarkSessionParallelAcquire`
+    (validates F5 via `b.RunParallel`; pair with `-cpu=1,2,4,8` to
+    chart scaling), `BenchmarkSelectionCacheHit` (stateMu + matches),
+    `BenchmarkEnsureEnabledHit` (stateMu + nested map lookup).
+  - `internal/session/session_test.go` — relaxed
+    `newFakeBrowser(t *testing.T)` → `newFakeBrowser(t testing.TB)` so
+    `*testing.B` reuses the same fixture without copy-paste.
+
+  Smoke from a local run (Windows, i9-13900HX, GOMAXPROCS=32):
+  `BenchmarkSessionAcquireWarm` ≈ 1.05 µs/op,
+  `BenchmarkSessionParallelAcquire` ≈ 1.91 µs/op (slightly higher
+  because parallel callers contend on the read-lock atomic, but still
+  well below the old serial mutex), `BenchmarkSelectionCacheHit` ≈
+  18 ns/op, `BenchmarkEnsureEnabledHit` ≈ 22 ns/op. These become the
+  baseline regression guard once `.github/workflows/ci.yml` gets the
+  follow-up `bench` job (deferred — out of scope for F9 since it
+  requires a stable runner profile).
+
+  Live-Office smoke (sample manifest under `testdata/sample-addin/`)
+  and the `internal/officejs/executor.go` payload-latency stamps are
+  the remaining F9 deliverables; both are deferred behind a fixture
+  workbook that's not yet checked in. The structural pieces — opt-in
+  integration tests + reusable benchmarks — ship now so a future PR
+  can layer the live-Office fixture without re-architecting either.
+
+### Changed
+
 - **Concurrent CDP dispatch per session.** Previously
   `Session.Acquire` took a `sync.Mutex` for the *entire* tool-call
   duration, so an agent batching parallel calls (e.g.

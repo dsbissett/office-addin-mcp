@@ -25,7 +25,7 @@ type fakeBrowser struct {
 	dialCount atomic.Int64
 }
 
-func newFakeBrowser(t *testing.T) *fakeBrowser {
+func newFakeBrowser(t testing.TB) *fakeBrowser {
 	t.Helper()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	mux := http.NewServeMux()
