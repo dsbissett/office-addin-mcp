@@ -64,6 +64,13 @@ type AttachedTarget struct {
 type RunEnv struct {
 	Diag *Diagnostics
 
+	// Endpoint is the CDP endpoint config the dispatcher resolved for this
+	// call. Always populated, even on NoSession lifecycle tools, so tools
+	// like addin.status can probe the configured endpoint without the
+	// caller having to thread it in as a parameter. Read-only — to mutate
+	// the server's default endpoint use SetEndpoint.
+	Endpoint webview2.Config
+
 	// Conn returns the CDP connection for this call. In session mode it may
 	// be reused across many calls; in one-shot mode it was dialed lazily for
 	// this call. Idempotent — repeated calls return the same connection.

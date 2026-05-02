@@ -106,6 +106,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	if tool.NoSession {
 		env := &RunEnv{
 			Diag:           &diag,
+			Endpoint:       req.Endpoint,
 			AllowDangerous: d.AllowDangerous,
 			SetEndpoint:    d.SetEndpoint,
 			Manifest:       d.Manifest,
@@ -137,6 +138,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	rtStart := conn.RoundTrips()
 
 	env := buildRunEnv(sess, conn, &diag, d.AllowDangerous, d.Manifest)
+	env.Endpoint = req.Endpoint
 	env.SetEndpoint = d.SetEndpoint
 	env.Manifest = d.Manifest
 	env.SetManifest = d.SetManifest

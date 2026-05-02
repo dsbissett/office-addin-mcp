@@ -4,6 +4,59 @@
 
 ### Added
 
+- **Windows WebView2 endpoint scan + `addin.status` aggregator.** The
+  Windows discovery scan was a stub (`scan_windows.go` returning
+  `ErrNotFound`), so a user who launched Excel without passing
+  `--browser-url` would always fall through to the default :9222 probe and
+  silently fail when Excel was on a non-default port. There was also no
+  one-shot way to ask the bridge "is everything ready?" — agents had to
+  chain `addin.detect` + `addin.listTargets` + `addin.contextInfo` and
+  diff the results. Reasoning: a single status call with structured
+  recoveryHints[] eliminates a multi-tool dance, and the scan turns a
+  "manual port flag" gotcha into an automatic discovery on Windows.
+  Concretely:
+  - `internal/webview2/scan_windows.go` — replaced the stub with a real
+    WebView2 scan. Excel inherits `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+    as an env var, but the child `msedgewebview2.exe` processes parse it
+    onto their command lines, so the scan shells out to
+    `wmic process where "name='msedgewebview2.exe'" get CommandLine
+    /format:list`, regex-extracts every `--remote-debugging-port=N`,
+    deduplicates, and probes `http://127.0.0.1:N/json/version` via the
+    existing `cdp.ResolveBrowserWSURL`. Returns the first responding
+    endpoint or `ErrNotFound` if `wmic` is missing / nothing's running.
+    The 5-second timeout on the wmic invocation prevents a slow box from
+    blocking the discovery ladder for long.
+  - `internal/webview2/scan_windows_test.go` *(new, build-tagged)* —
+    tests the parser against representative `wmic /format:list` output:
+    one process with two distinct ports, dedup of repeats, and an
+    out-of-range / missing-flag scrub.
+  - `internal/tools/addintool/status.go` *(new)* — `addin.status` tool
+    (NoSession). Probes the configured endpoint via `webview2.Discover`,
+    dials and calls `Target.getTargets`, classifies via
+    `addin.ClassifyTargets`, and returns
+    `{endpoint{source,browserUrl,wsUrl,reachable,error}, manifest{loaded,
+    id,displayName,path,hosts}, targets[], recoveryHints[]}`. Always
+    returns `tools.OK` — failures are encoded inside the payload so the
+    agent can read both the reachability state and the recovery hint in
+    one call instead of branching on `envelope.error`. RecoveryHints
+    cover: unreachable endpoint → call `addin.ensureRunning`; missing
+    manifest → call `addin.detect`; empty target list → taskpane may not
+    be open yet.
+  - `internal/tools/runtime.go` — added `RunEnv.Endpoint webview2.Config`.
+    NoSession tools previously had no way to read the configured
+    endpoint, which mattered because `addin.status` is the
+    "is the endpoint reachable?" tool and needs to probe whatever the
+    user/server resolved.
+  - `internal/tools/dispatcher.go` — populates `env.Endpoint = req.Endpoint`
+    on both the NoSession and pooled-session paths.
+  - `internal/tools/addintool/register.go` — registers `Status()`.
+  - `internal/tools/addintool/addintool_test.go` — extended the registry
+    smoke test to assert `addin.ensureRunning` and `addin.status` show up;
+    new `TestStatus_UnreachableEndpoint` runs the tool against
+    `http://127.0.0.1:1` and asserts `reachable=false`,
+    a non-empty `Endpoint.Error`, and a recoveryHint that mentions
+    `addin.ensureRunning`.
+
 - **`addin.ensureRunning` tool + `--launch-excel` startup flag.** Bringing
   Excel up with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222"`
   and then sideloading the manifest by hand was the single biggest first-run
