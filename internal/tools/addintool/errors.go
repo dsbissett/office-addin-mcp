@@ -41,8 +41,8 @@ func mapPayloadError(err error) tools.Result {
 // recognize so the agent falls back to the Message.
 func recoveryHintForOfficeCode(code string) string {
 	switch code {
-	case "office_unavailable", "excel_unavailable":
-		return "Office.js / Excel global not loaded in this target. Confirm the call is targeting an Office add-in taskpane (not the document body), and that the add-in has been sideloaded — call addin.launch if not."
+	case "office_unavailable":
+		return "Office.js is not loaded in this target. Confirm the call is targeting an Office add-in taskpane (not the document body), and that the add-in has been sideloaded — call addin.launch if not."
 	case "office_ready_failed", "office_ready_timeout":
 		return "Office.onReady did not resolve in time — the host may still be initializing. Wait a moment and retry; if persistent, reload the add-in via addin.launch."
 	case "requirement_unmet", "requirement_check_failed":

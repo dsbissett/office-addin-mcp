@@ -85,7 +85,7 @@ func TestPreambleEmbedded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("preamble: %v", err)
 	}
-	for _, want := range []string{"__officeError", "__ensureOffice", "__requireSet", "__runExcel", "Office.onReady"} {
+	for _, want := range []string{"__officeError", "__ensureOffice", "__requireSet", "__runExcel", "__runWord", "__runPowerPoint", "__runOneNote", "__runOutlook", "Office.onReady"} {
 		if !strings.Contains(pre, want) {
 			t.Errorf("preamble missing %q", want)
 		}

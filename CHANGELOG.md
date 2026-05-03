@@ -4,6 +4,31 @@
 
 ### Changed
 
+- **Multi-host F2 — generalized Office.js preamble for all hosts.**
+  `internal/js/_preamble.js` only exposed `__runExcel` and the
+  `__ensureOffice` gate hard-failed when `globalThis.Excel` was
+  unavailable — fine for Excel-only payloads, but a non-starter for
+  the upcoming Word / Outlook / PowerPoint / OneNote tools that need
+  to run in taskpanes hosted by other Office apps. Reasoning: every
+  host shares the same `Office.onReady` bootstrap; only the per-host
+  `<Host>.run` wrapper differs, so it's cheaper to add four sibling
+  helpers than to duplicate the readiness dance per host.
+  - `internal/js/_preamble.js` — removed the `globalThis.Excel`
+    presence check from `__ensureOffice`; the `office_unavailable`
+    error now covers every host. Added `__runWord(fn)`,
+    `__runPowerPoint(fn)`, `__runOneNote(fn)`, and `__runOutlook(fn)`
+    alongside `__runExcel`. The first three follow the existing
+    `Excel.run` pattern; `__runOutlook` is the odd one — it skips
+    `<Host>.run` (Outlook has no equivalent batched-context API) and
+    just hands `Office.context.mailbox` to the payload after readiness.
+  - `internal/tools/addintool/errors.go` — `recoveryHintForOfficeCode`
+    no longer matches `excel_unavailable` (the preamble can no longer
+    throw it); the `office_unavailable` hint is now phrased
+    host-agnostically ("Office.js is not loaded in this target").
+  - `internal/officejs/payloads_test.go` — `TestPreambleEmbedded`
+    asserts the four new run helpers are concatenated into the
+    embedded preamble alongside the existing markers.
+
 - **Multi-host F1 — extracted shared payload runner into `internal/tools/officetool`.**
   The `runPayload` scaffolding (Attach → Office.js dispatch → envelope mapping)
   used to live entirely inside `internal/tools/exceltool/runner.go`, which
