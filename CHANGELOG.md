@@ -2,6 +2,48 @@
 
 ## Unreleased
 
+### Added
+
+- **Multi-host F4 — Word add-in tool surface (8 tools).** Adds the
+  first non-Excel host package against the new officetool runner. None
+  of the new tools are wired into the registry yet — the `Register`
+  call lands in F7's bulk wiring step so a single commit flips on
+  all four host packages at once. Reasoning: keeping the host packages
+  individually verifiable (each has its own `register_test.go` that
+  panic-checks every schema and asserts every tool has a JS payload)
+  lets us land them serially without disturbing the live MCP surface.
+  - `internal/js/word_*.js` *(8 new payloads)* —
+    `word_read_body.js`, `word_write_body.js`,
+    `word_read_paragraphs.js`, `word_insert_paragraph.js`,
+    `word_read_selection.js`, `word_search_text.js`,
+    `word_read_properties.js`, `word_run_script.js`. All call
+    `__runWord(async ctx => { … })` introduced by F2 and follow the
+    same `// @requires WordApi <ver>` convention used by the Excel
+    payloads (so the existing requirement-set tooling parses them
+    automatically).
+  - `internal/tools/wordtool/runner.go` *(new package)* — package-level
+    `runPayloadSum` that forwards to `officetool.RunPayload(...,
+    "Word")`, plus the small `arrayLen` / `stringField` /
+    `emptySelectorParams` helpers mirrored from `exceltool`. The
+    selector-base const re-exports `officetool.TargetSelectorBase` so
+    schemas in this package keep the same string-concat shape as in
+    `exceltool`.
+  - `internal/tools/wordtool/document.go` — constructors for the seven
+    document-scoped tools (`word.readBody`, `word.writeBody`,
+    `word.readParagraphs`, `word.insertParagraph`,
+    `word.readSelection`, `word.searchText`, `word.readProperties`).
+    Tools that take only the selector embed `emptySelectorParams`;
+    tools with extra fields embed `officetool.SelectorFields` directly.
+  - `internal/tools/wordtool/script.go` — `word.runScript` escape
+    hatch, mirroring `excel.runScript` (compiles the user's body via
+    `new Function(...)` and runs it inside `__runWord`).
+  - `internal/tools/wordtool/register.go` — `Register(r)` exported but
+    not yet called from `internal/mcp/registry.go`; F7 will flip the
+    full multi-host surface on at once.
+  - `internal/tools/wordtool/register_test.go` — mirrors the Excel
+    register test: asserts exactly 8 tools register and every
+    registered tool has an embedded JS payload.
+
 ### Changed
 
 - **Multi-host F3 — generalized add-in manifest detection.**
