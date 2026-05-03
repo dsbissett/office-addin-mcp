@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -30,7 +31,13 @@ func runWorkbookInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.workbookInfo", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.workbookInfo", map[string]any{}, func(data any) string {
+		name := stringField(data, "name")
+		if name == "" {
+			return "Returned workbook info."
+		}
+		return "Returned workbook info for " + name + "."
+	})
 }
 
 // CalculationState returns the excel.calculationState tool definition.
@@ -48,7 +55,18 @@ func runCalculationState(ctx context.Context, raw json.RawMessage, env *tools.Ru
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.calculationState", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.calculationState", map[string]any{}, func(data any) string {
+		mode := stringField(data, "calculationMode")
+		state := stringField(data, "calculationState")
+		switch {
+		case mode != "" && state != "":
+			return fmt.Sprintf("Calculation mode=%s, state=%s.", mode, state)
+		case mode != "":
+			return "Calculation mode=" + mode + "."
+		default:
+			return "Returned calculation state."
+		}
+	})
 }
 
 // ListNamedItems returns the excel.listNamedItems tool definition.
@@ -66,7 +84,9 @@ func runListNamedItems(ctx context.Context, raw json.RawMessage, env *tools.RunE
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listNamedItems", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.listNamedItems", map[string]any{}, func(data any) string {
+		return fmt.Sprintf("Listed %d named item(s).", arrayLen(data, "items"))
+	})
 }
 
 // CustomXMLParts returns the excel.customXmlParts tool definition.
@@ -84,7 +104,9 @@ func runCustomXMLParts(ctx context.Context, raw json.RawMessage, env *tools.RunE
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.customXmlParts", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.customXmlParts", map[string]any{}, func(data any) string {
+		return fmt.Sprintf("Listed %d custom XML part(s).", arrayLen(data, "parts"))
+	})
 }
 
 const settingsGetSchema = `{
@@ -120,5 +142,15 @@ func runSettingsGet(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	if p.Key != "" {
 		args["key"] = p.Key
 	}
-	return runPayload(ctx, env, p.selector(), "excel.settingsGet", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.settingsGet", args, func(data any) string {
+		if p.Key != "" {
+			return "Read setting " + p.Key + "."
+		}
+		if m, ok := data.(map[string]any); ok {
+			if settings, ok := m["settings"].(map[string]any); ok {
+				return fmt.Sprintf("Read %d setting(s).", len(settings))
+			}
+		}
+		return "Read add-in settings."
+	})
 }

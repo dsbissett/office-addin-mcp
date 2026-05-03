@@ -63,11 +63,23 @@ func runDetect(_ context.Context, raw json.RawMessage, _ *tools.RunEnv) tools.Re
 	project, err := launch.DetectAddin(cwd)
 	if err != nil {
 		if errors.Is(err, launch.ErrNoProject) {
-			return tools.FailWithDetails(tools.CategoryNotFound, "addin_not_found", err.Error(), false, map[string]any{
-				"cwd": cwd,
-			})
+			return tools.Result{
+				Err: &tools.EnvelopeError{
+					Code:     "addin_not_found",
+					Message:  err.Error(),
+					Category: tools.CategoryNotFound,
+					Details:  map[string]any{"cwd": cwd},
+				},
+				Summary: "No add-in project found at or above " + cwd + ".",
+			}
 		}
-		return tools.Fail(tools.CategoryInternal, "detect_failed", err.Error(), false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "detect_failed", Message: err.Error(), Category: tools.CategoryInternal},
+			Summary: "Detect failed: " + err.Error(),
+		}
 	}
-	return tools.OK(project)
+	return tools.OKWithSummary(
+		"Detected "+string(project.ManifestKind)+" add-in at "+project.Root+".",
+		project,
+	)
 }

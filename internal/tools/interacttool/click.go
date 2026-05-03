@@ -3,6 +3,7 @@ package interacttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -60,7 +61,7 @@ func runClick(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	if err != nil {
 		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
-	x, y, _, lookupRes := nodeCenter(ctx, env, att, p.UID)
+	x, y, node, lookupRes := nodeCenter(ctx, env, att, p.UID)
 	if lookupRes.Err != nil {
 		return lookupRes
 	}
@@ -80,11 +81,25 @@ func runClick(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	if _, err := att.Conn.Send(ctx, att.SessionID, "Input.dispatchMouseEvent", released); err != nil {
 		return tools.ClassifyCDPErr("mouse_release_failed", err)
 	}
-	return tools.OK(struct {
-		UID string  `json:"uid"`
-		X   float64 `json:"x"`
-		Y   float64 `json:"y"`
-	}{UID: p.UID, X: x, Y: y})
+	label := node.Role
+	if node.Name != "" {
+		label = fmt.Sprintf("%s %q", node.Role, node.Name)
+	}
+	verb := "Clicked"
+	switch clickCount {
+	case 2:
+		verb = "Double-clicked"
+	case 3:
+		verb = "Triple-clicked"
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("%s %s (%s).", verb, label, p.UID),
+		struct {
+			UID string  `json:"uid"`
+			X   float64 `json:"x"`
+			Y   float64 `json:"y"`
+		}{UID: p.UID, X: x, Y: y},
+	)
 }
 
 func mergeMap(a, b map[string]any) map[string]any {

@@ -88,17 +88,20 @@ func runEnsureRunning(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 		// "no project supplied" LaunchError. Translate to a friendlier
 		// addin_not_found shape with a recovery hint.
 		if project == nil {
-			return tools.Result{Err: &tools.EnvelopeError{
-				Code:         "addin_not_found",
-				Message:      detectErrMessage(detectErr, cwd),
-				Category:     tools.CategoryNotFound,
-				Retryable:    false,
-				RecoveryHint: "Excel is not reachable on the CDP port and no add-in project was found under cwd. Pass cwd=<add-in project root>, or call addin.detect to locate one, then addin.launch.",
-				Details: map[string]any{
-					"cwd":                cwd,
-					"recoverableViaTool": "addin.detect",
+			return tools.Result{
+				Err: &tools.EnvelopeError{
+					Code:         "addin_not_found",
+					Message:      detectErrMessage(detectErr, cwd),
+					Category:     tools.CategoryNotFound,
+					Retryable:    false,
+					RecoveryHint: "Excel is not reachable on the CDP port and no add-in project was found under cwd. Pass cwd=<add-in project root>, or call addin.detect to locate one, then addin.launch.",
+					Details: map[string]any{
+						"cwd":                cwd,
+						"recoverableViaTool": "addin.detect",
+					},
 				},
-			}}
+				Summary: "Excel unreachable and no add-in project found under " + cwd + ".",
+			}
 		}
 		return launchErrToResult(err)
 	}
@@ -124,7 +127,16 @@ func runEnsureRunning(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 	if len(res.Output) > 0 {
 		out["output"] = res.Output
 	}
-	return tools.OK(out)
+	var summary string
+	switch source {
+	case "preexisting":
+		summary = fmt.Sprintf("Excel already reachable at %s.", res.CDPURL)
+	case "launched":
+		summary = fmt.Sprintf("Launched Excel (pid=%d) at %s.", res.PID, res.CDPURL)
+	default:
+		summary = fmt.Sprintf("Excel reachable at %s (source=%s).", res.CDPURL, source)
+	}
+	return tools.OKWithSummary(summary, out)
 }
 
 func detectErrMessage(detectErr error, cwd string) string {
@@ -140,7 +152,10 @@ func detectErrMessage(detectErr error, cwd string) string {
 func launchErrToResult(err error) tools.Result {
 	le := launch.AsLaunchError(err)
 	if le == nil {
-		return tools.Fail(tools.CategoryInternal, "launch_failed", err.Error(), false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "launch_failed", Message: err.Error(), Category: tools.CategoryInternal},
+			Summary: "Launch failed: " + err.Error(),
+		}
 	}
 	var (
 		category  = tools.CategoryInternal
@@ -168,6 +183,7 @@ func launchErrToResult(err error) tools.Result {
 	}
 	res := tools.FailWithDetails(category, codeFromReason(le.Reason), le.Message, retryable, details)
 	res.Err.RecoveryHint = hint
+	res.Summary = "Launch failed: " + le.Message
 	return res
 }
 

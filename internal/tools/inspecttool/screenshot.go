@@ -110,17 +110,23 @@ func runScreenshot(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 		if err := os.WriteFile(p.OutputPath, bytes, 0o644); err != nil {
 			return tools.Fail(tools.CategoryInternal, "output_write_failed", err.Error(), false)
 		}
-		return tools.OK(tools.BinaryOutput{
-			Path:      p.OutputPath,
-			SizeBytes: int64(len(bytes)),
-			MimeType:  mime,
-		})
+		return tools.OKWithSummary(
+			fmt.Sprintf("Wrote %s screenshot (%d bytes) to %s.", format, len(bytes), p.OutputPath),
+			tools.BinaryOutput{
+				Path:      p.OutputPath,
+				SizeBytes: int64(len(bytes)),
+				MimeType:  mime,
+			},
+		)
 	}
 
-	return tools.OK(struct {
-		MimeType string `json:"mimeType"`
-		Data     string `json:"data"`
-	}{MimeType: mime, Data: shot.Data})
+	return tools.OKWithSummary(
+		fmt.Sprintf("Captured %s screenshot.", format),
+		struct {
+			MimeType string `json:"mimeType"`
+			Data     string `json:"data"`
+		}{MimeType: mime, Data: shot.Data},
+	)
 }
 
 // clipFromUID asks DOM.getBoxModel for the snapshot node and converts its

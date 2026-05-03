@@ -3,6 +3,7 @@ package inspecttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	cdpproto "github.com/dsbissett/office-addin-mcp/internal/cdp"
@@ -78,14 +79,24 @@ func runWaitFor(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) too
 			return tools.ClassifyCDPErr("evaluate_failed", err)
 		}
 		if res.ExceptionDetails == nil && res.Result != nil && string(res.Result.Value) == "true" {
-			return tools.OK(struct {
-				Satisfied bool `json:"satisfied"`
-				Attempts  int  `json:"attempts"`
-			}{Satisfied: true, Attempts: attempts})
+			return tools.OKWithSummary(
+				fmt.Sprintf("Predicate satisfied after %d attempt(s).", attempts),
+				struct {
+					Satisfied bool `json:"satisfied"`
+					Attempts  int  `json:"attempts"`
+				}{Satisfied: true, Attempts: attempts},
+			)
 		}
 		if time.Now().After(deadline) {
-			return tools.Fail(tools.CategoryTimeout, "wait_timeout",
-				"predicate did not become truthy before timeout", true)
+			return tools.Result{
+				Err: &tools.EnvelopeError{
+					Code:      "wait_timeout",
+					Message:   "predicate did not become truthy before timeout",
+					Category:  tools.CategoryTimeout,
+					Retryable: true,
+				},
+				Summary: fmt.Sprintf("Predicate did not become truthy within %s (%d attempt(s)).", timeout, attempts),
+			}
 		}
 		select {
 		case <-ctx.Done():

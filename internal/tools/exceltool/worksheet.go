@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -30,7 +31,9 @@ func runListWorksheets(ctx context.Context, raw json.RawMessage, env *tools.RunE
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listWorksheets", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.listWorksheets", map[string]any{}, func(data any) string {
+		return fmt.Sprintf("Listed %d worksheet(s).", arrayLen(data, "worksheets"))
+	})
 }
 
 const getActiveWorksheetSchema = listWorksheetsSchema
@@ -50,7 +53,13 @@ func runGetActiveWorksheet(ctx context.Context, raw json.RawMessage, env *tools.
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.getActiveWorksheet", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.getActiveWorksheet", map[string]any{}, func(data any) string {
+		name := stringField(data, "name")
+		if name == "" {
+			return "Returned active worksheet."
+		}
+		return "Active worksheet: " + name + "."
+	})
 }
 
 const worksheetInfoSchema = `{
@@ -86,7 +95,18 @@ func runWorksheetInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.worksheetInfo", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.worksheetInfo", args, func(data any) string {
+		name := stringField(data, "name")
+		used := stringField(data, "usedRangeAddress")
+		switch {
+		case name != "" && used != "":
+			return fmt.Sprintf("Worksheet %s: used range %s.", name, used)
+		case name != "":
+			return "Worksheet " + name + "."
+		default:
+			return "Returned worksheet info."
+		}
+	})
 }
 
 const namedWorksheetSchema = `{
@@ -119,7 +139,9 @@ func runActivateWorksheet(ctx context.Context, raw json.RawMessage, env *tools.R
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.activateWorksheet", map[string]any{"name": p.Name})
+	return runPayloadSum(ctx, env, p.selector(), "excel.activateWorksheet", map[string]any{"name": p.Name}, func(_ any) string {
+		return "Activated worksheet " + p.Name + "."
+	})
 }
 
 // CreateWorksheet returns the excel.createWorksheet tool definition.
@@ -137,7 +159,9 @@ func runCreateWorksheet(ctx context.Context, raw json.RawMessage, env *tools.Run
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.createWorksheet", map[string]any{"name": p.Name})
+	return runPayloadSum(ctx, env, p.selector(), "excel.createWorksheet", map[string]any{"name": p.Name}, func(_ any) string {
+		return "Created worksheet " + p.Name + "."
+	})
 }
 
 // DeleteWorksheet returns the excel.deleteWorksheet tool definition.
@@ -155,5 +179,7 @@ func runDeleteWorksheet(ctx context.Context, raw json.RawMessage, env *tools.Run
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.deleteWorksheet", map[string]any{"name": p.Name})
+	return runPayloadSum(ctx, env, p.selector(), "excel.deleteWorksheet", map[string]any{"name": p.Name}, func(_ any) string {
+		return "Deleted worksheet " + p.Name + "."
+	})
 }

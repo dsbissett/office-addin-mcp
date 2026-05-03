@@ -3,6 +3,7 @@ package addintool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
@@ -66,13 +67,20 @@ func runListTargets(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		}
 		out = append(out, c)
 	}
-	return tools.OK(struct {
-		Targets     []addin.ClassifiedTarget `json:"targets"`
-		Manifest    *addin.Manifest          `json:"manifest,omitempty"`
-		HasManifest bool                     `json:"hasManifest"`
-	}{
-		Targets:     out,
-		Manifest:    manifest,
-		HasManifest: manifest != nil,
-	})
+	manifestSuffix := " (no manifest loaded)"
+	if manifest != nil {
+		manifestSuffix = ""
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("Listed %d CDP target(s)%s.", len(out), manifestSuffix),
+		struct {
+			Targets     []addin.ClassifiedTarget `json:"targets"`
+			Manifest    *addin.Manifest          `json:"manifest,omitempty"`
+			HasManifest bool                     `json:"hasManifest"`
+		}{
+			Targets:     out,
+			Manifest:    manifest,
+			HasManifest: manifest != nil,
+		},
+	)
 }

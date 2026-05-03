@@ -70,10 +70,13 @@ func runPressKey(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 	if _, err := att.Conn.Send(ctx, att.SessionID, "Input.dispatchKeyEvent", up); err != nil {
 		return tools.ClassifyCDPErr("key_up_failed", err)
 	}
-	return tools.OK(struct {
-		Key       string `json:"key"`
-		Modifiers int    `json:"modifiers"`
-	}{Key: keyInfo.Key, Modifiers: mods})
+	return tools.OKWithSummary(
+		"Pressed "+p.Key+".",
+		struct {
+			Key       string `json:"key"`
+			Modifiers int    `json:"modifiers"`
+		}{Key: keyInfo.Key, Modifiers: mods},
+	)
 }
 
 // parseShortcut splits "Ctrl+Shift+A" into a modifier bitmask + the trailing

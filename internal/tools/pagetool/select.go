@@ -54,15 +54,22 @@ func runSelect(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	if env.SetDefaultSelection != nil {
 		env.SetDefaultSelection(att.Target, att.SessionID)
 	}
-	return tools.OK(struct {
-		TargetID     string `json:"targetId"`
-		URL          string `json:"url"`
-		Title        string `json:"title,omitempty"`
-		CDPSessionID string `json:"cdpSessionId"`
-	}{
-		TargetID:     att.Target.TargetID,
-		URL:          att.Target.URL,
-		Title:        att.Target.Title,
-		CDPSessionID: att.SessionID,
-	})
+	label := att.Target.Title
+	if label == "" {
+		label = att.Target.URL
+	}
+	return tools.OKWithSummary(
+		"Selected page "+label+".",
+		struct {
+			TargetID     string `json:"targetId"`
+			URL          string `json:"url"`
+			Title        string `json:"title,omitempty"`
+			CDPSessionID string `json:"cdpSessionId"`
+		}{
+			TargetID:     att.Target.TargetID,
+			URL:          att.Target.URL,
+			Title:        att.Target.Title,
+			CDPSessionID: att.SessionID,
+		},
+	)
 }

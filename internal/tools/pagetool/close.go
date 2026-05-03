@@ -68,8 +68,15 @@ func runClose(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	if env.ClearDefaultSelection != nil {
 		env.ClearDefaultSelection()
 	}
-	return tools.OK(struct {
-		TargetID string `json:"targetId"`
-		Success  bool   `json:"success"`
-	}{TargetID: att.Target.TargetID, Success: out.Success})
+	summary := "Closed page " + att.Target.TargetID + "."
+	if !out.Success {
+		summary = "Close requested for " + att.Target.TargetID + " but CDP reported success=false."
+	}
+	return tools.OKWithSummary(
+		summary,
+		struct {
+			TargetID string `json:"targetId"`
+			Success  bool   `json:"success"`
+		}{TargetID: att.Target.TargetID, Success: out.Success},
+	)
 }

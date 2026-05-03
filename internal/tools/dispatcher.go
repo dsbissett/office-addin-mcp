@@ -151,9 +151,9 @@ func finalize(diag Diagnostics, start time.Time, roundTrips int64, res Result) E
 	diag.DurationMs = time.Since(start).Milliseconds()
 	diag.CDPRoundTrips = roundTrips
 	if res.Err != nil {
-		return Envelope{OK: false, Error: res.Err, Diagnostics: diag}
+		return Envelope{OK: false, Error: res.Err, Summary: res.Summary, Diagnostics: diag}
 	}
-	return Envelope{OK: true, Data: res.Data, Diagnostics: diag}
+	return Envelope{OK: true, Data: res.Data, Summary: res.Summary, Diagnostics: diag}
 }
 
 // classifyAcquireErr maps a session.Acquire failure to a rich EnvelopeError

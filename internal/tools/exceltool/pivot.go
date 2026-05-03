@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -30,7 +31,9 @@ func runListPivotTables(ctx context.Context, raw json.RawMessage, env *tools.Run
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listPivotTables", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.listPivotTables", map[string]any{}, func(data any) string {
+		return fmt.Sprintf("Listed %d PivotTable(s).", arrayLen(data, "pivotTables"))
+	})
 }
 
 const namedPivotSchema = `{
@@ -63,7 +66,9 @@ func runPivotTableInfo(ctx context.Context, raw json.RawMessage, env *tools.RunE
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.pivotTableInfo", map[string]any{"name": p.Name})
+	return runPayloadSum(ctx, env, p.selector(), "excel.pivotTableInfo", map[string]any{"name": p.Name}, func(_ any) string {
+		return "Returned info for PivotTable " + p.Name + "."
+	})
 }
 
 // PivotTableValues returns the excel.pivotTableValues tool definition.
@@ -81,8 +86,10 @@ func runPivotTableValues(ctx context.Context, raw json.RawMessage, env *tools.Ru
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.pivotTableValues", map[string]any{
+	return runPayloadSum(ctx, env, p.selector(), "excel.pivotTableValues", map[string]any{
 		"name":     p.Name,
 		"maxCells": maxCells,
+	}, func(data any) string {
+		return rangeReadSummary(data, "Read PivotTable "+p.Name, "")
 	})
 }

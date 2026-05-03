@@ -3,6 +3,7 @@ package addintool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
@@ -138,7 +139,7 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 			out.RecoveryHints = append(out.RecoveryHints,
 				"No add-in manifest is loaded yet — call addin.detect (or addin.launch) before issuing excel.* / page.* tools.")
 		}
-		return tools.OK(out)
+		return tools.OKWithSummary("CDP endpoint unreachable; no add-in detected.", out)
 	}
 
 	out.Endpoint = statusEndpoint{
@@ -152,7 +153,7 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	if derr != nil {
 		out.RecoveryHints = append(out.RecoveryHints,
 			"Discovered the CDP endpoint but the WebSocket dial failed. The endpoint may be transitioning — retry in a moment.")
-		return tools.OK(out)
+		return tools.OKWithSummary("Endpoint discovered at "+ep.WSURL+" but WebSocket dial failed.", out)
 	}
 	defer func() { _ = conn.Close() }()
 
@@ -160,7 +161,7 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	if terr != nil {
 		out.RecoveryHints = append(out.RecoveryHints,
 			"Connected to the browser but Target.getTargets failed. The browser may be in a transient state — retry, or restart Excel.")
-		return tools.OK(out)
+		return tools.OKWithSummary("Connected to "+ep.WSURL+" but Target.getTargets failed.", out)
 	}
 
 	var manifest *addin.Manifest
@@ -185,7 +186,17 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 		out.RecoveryHints = append(out.RecoveryHints,
 			"No add-in manifest is loaded — call addin.detect or addin.launch so subsequent tools can match targets by surface.")
 	}
-	return tools.OK(out)
+	manifestLabel := "no manifest"
+	if out.Manifest.Loaded {
+		manifestLabel = out.Manifest.DisplayName
+		if manifestLabel == "" {
+			manifestLabel = out.Manifest.ID
+		}
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("CDP reachable at %s; %d target(s) visible; %s.", ep.WSURL, len(visible), manifestLabel),
+		out,
+	)
 }
 
 // manifestSummary projects the active manifest (if any) into the wire shape

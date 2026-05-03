@@ -3,6 +3,7 @@ package inspecttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/dsbissett/office-addin-mcp/internal/session"
@@ -81,10 +82,13 @@ func runConsoleLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	buf := env.EventBuf(session.ConsoleBufKind, att.SessionID, p.MaxBuffer)
 	if p.Clear {
 		buf.Clear()
-		return tools.OK(consoleLogResponse{
-			TargetID: att.Target.TargetID,
-			Records:  []session.EventRecord{},
-		})
+		return tools.OKWithSummary(
+			"Cleared console buffer.",
+			consoleLogResponse{
+				TargetID: att.Target.TargetID,
+				Records:  []session.EventRecord{},
+			},
+		)
 	}
 
 	res := buf.Drain(session.DrainOpts{
@@ -93,13 +97,20 @@ func runConsoleLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 		Peek:     p.Peek,
 	})
 	records := filterConsoleLevels(res.Records, p.Levels)
-	return tools.OK(consoleLogResponse{
-		TargetID: att.Target.TargetID,
-		Records:  records,
-		LastSeq:  res.LastSeq,
-		Dropped:  res.Dropped,
-		Capacity: buf.Max(),
-	})
+	suffix := ""
+	if res.Dropped {
+		suffix = " (buffer overflowed; older entries dropped)"
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("Drained %d console record(s)%s.", len(records), suffix),
+		consoleLogResponse{
+			TargetID: att.Target.TargetID,
+			Records:  records,
+			LastSeq:  res.LastSeq,
+			Dropped:  res.Dropped,
+			Capacity: buf.Max(),
+		},
+	)
 }
 
 type consoleLogResponse struct {

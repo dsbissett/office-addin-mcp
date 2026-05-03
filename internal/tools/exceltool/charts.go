@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -35,7 +36,9 @@ func runListCharts(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listCharts", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.listCharts", args, func(data any) string {
+		return fmt.Sprintf("Listed %d chart(s).", arrayLen(data, "charts"))
+	})
 }
 
 const chartInfoSchema = `{
@@ -70,9 +73,15 @@ func runChartInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.chartInfo", map[string]any{
+	return runPayloadSum(ctx, env, p.selector(), "excel.chartInfo", map[string]any{
 		"sheet": p.Sheet,
 		"name":  p.Name,
+	}, func(data any) string {
+		typ := stringField(data, "chartType")
+		if typ != "" {
+			return fmt.Sprintf("Chart %s on %s (type=%s).", p.Name, p.Sheet, typ)
+		}
+		return "Returned info for chart " + p.Name + " on " + p.Sheet + "."
 	})
 }
 
@@ -124,5 +133,7 @@ func runChartImage(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if p.Height > 0 {
 		args["height"] = p.Height
 	}
-	return runPayload(ctx, env, p.selector(), "excel.chartImage", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.chartImage", args, func(_ any) string {
+		return "Rendered chart " + p.Name + " on " + p.Sheet + " as PNG."
+	})
 }

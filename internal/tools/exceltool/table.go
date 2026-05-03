@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -53,7 +54,16 @@ func runCreateTable(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	if p.HasHeaders != nil {
 		args["hasHeaders"] = *p.HasHeaders
 	}
-	return runPayload(ctx, env, p.selector(), "excel.createTable", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.createTable", args, func(data any) string {
+		name := stringField(data, "name")
+		if name == "" {
+			name = p.Name
+		}
+		if name == "" {
+			return "Created table at " + p.Address + "."
+		}
+		return "Created table " + name + " at " + p.Address + "."
+	})
 }
 
 const listTablesSchema = `{
@@ -79,7 +89,9 @@ func runListTables(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listTables", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.listTables", map[string]any{}, func(data any) string {
+		return fmt.Sprintf("Listed %d table(s).", arrayLen(data, "tables"))
+	})
 }
 
 const namedTableSchema = `{
@@ -112,7 +124,13 @@ func runTableInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.tableInfo", map[string]any{"name": p.Name})
+	return runPayloadSum(ctx, env, p.selector(), "excel.tableInfo", map[string]any{"name": p.Name}, func(data any) string {
+		addr := stringField(data, "address")
+		if addr != "" {
+			return fmt.Sprintf("Table %s at %s.", p.Name, addr)
+		}
+		return "Returned info for table " + p.Name + "."
+	})
 }
 
 const tableRowsSchema = `{
@@ -152,7 +170,18 @@ func runTableRows(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 		"includeHeaders": p.IncludeHeaders,
 		"maxCells":       maxCells,
 	}
-	return runPayload(ctx, env, p.selector(), "excel.tableRows", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.tableRows", args, func(data any) string {
+		rows := numberField(data, "rowCount")
+		cols := numberField(data, "columnCount")
+		truncSuffix := ""
+		if boolField(data, "truncated") {
+			truncSuffix = " (truncated)"
+		}
+		if rows > 0 {
+			return fmt.Sprintf("Read %d row(s) x %d column(s) from %s%s.", rows, cols, p.Name, truncSuffix)
+		}
+		return "Read rows from table " + p.Name + "."
+	})
 }
 
 // TableFilters returns the excel.tableFilters tool definition.
@@ -170,5 +199,7 @@ func runTableFilters(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.tableFilters", map[string]any{"name": p.Name})
+	return runPayloadSum(ctx, env, p.selector(), "excel.tableFilters", map[string]any{"name": p.Name}, func(data any) string {
+		return fmt.Sprintf("Returned filters for table %s (%d column(s)).", p.Name, arrayLen(data, "columns"))
+	})
 }

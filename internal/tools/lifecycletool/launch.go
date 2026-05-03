@@ -98,7 +98,11 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 			env.SetManifest(m)
 		}
 	}
-	return tools.OK(res)
+	summary := fmt.Sprintf("Launched Excel (pid=%d) with CDP at %s.", res.PID, res.CDPURL)
+	if res.DevServerPort > 0 {
+		summary = fmt.Sprintf("Launched Excel (pid=%d) with CDP at %s and dev server on :%d.", res.PID, res.CDPURL, res.DevServerPort)
+	}
+	return tools.OKWithSummary(summary, res)
 }
 
 // launchErrToResult maps a *launch.LaunchError onto our envelope categories.
@@ -108,7 +112,10 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 func launchErrToResult(err error) tools.Result {
 	le := launch.AsLaunchError(err)
 	if le == nil {
-		return tools.Fail(tools.CategoryInternal, "launch_failed", err.Error(), false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "launch_failed", Message: err.Error(), Category: tools.CategoryInternal},
+			Summary: "Launch failed: " + err.Error(),
+		}
 	}
 	var (
 		category  = tools.CategoryInternal
@@ -127,7 +134,16 @@ func launchErrToResult(err error) tools.Result {
 	if len(le.Output) > 0 {
 		details["output"] = le.Output
 	}
-	return tools.FailWithDetails(category, codeFromReason(le.Reason), le.Message, retryable, details)
+	return tools.Result{
+		Err: &tools.EnvelopeError{
+			Code:      codeFromReason(le.Reason),
+			Message:   le.Message,
+			Category:  category,
+			Retryable: retryable,
+			Details:   details,
+		},
+		Summary: "Launch failed: " + le.Message,
+	}
 }
 
 func codeFromReason(reason string) string {

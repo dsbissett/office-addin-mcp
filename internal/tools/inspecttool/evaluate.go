@@ -69,7 +69,14 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		return tools.ClassifyCDPErr("evaluate_failed", err)
 	}
 	if res.ExceptionDetails != nil {
-		return tools.Fail(tools.CategoryProtocol, "evaluation_exception", res.ExceptionDetails.String(), false)
+		return tools.Result{
+			Err: &tools.EnvelopeError{
+				Code:     "evaluation_exception",
+				Message:  res.ExceptionDetails.String(),
+				Category: tools.CategoryProtocol,
+			},
+			Summary: "JS evaluation threw: " + res.ExceptionDetails.String(),
+		}
 	}
 	out := struct {
 		Type        string          `json:"type"`
@@ -81,5 +88,5 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		out.Value = res.Result.Value
 		out.Description = res.Result.Description
 	}
-	return tools.OK(out)
+	return tools.OKWithSummary("Evaluated JS; result type "+out.Type+".", out)
 }

@@ -19,13 +19,26 @@ type Request struct {
 }
 
 // Result is what a tool's Run function returns. Exactly one of Data/Err is set.
+//
+// Summary is an optional one-line human-readable message. When non-empty the
+// MCP adapter prepends it as a TextContent block ahead of the JSON payload, so
+// chat clients display friendly text in the tool's OUT bubble while agents
+// still parse the structured Data block. Leave empty for tools where the JSON
+// payload is already self-explanatory or where there is nothing meaningful to
+// announce. Set on both success and failure paths.
 type Result struct {
-	Data any
-	Err  *EnvelopeError
+	Data    any
+	Err     *EnvelopeError
+	Summary string
 }
 
 // OK builds a successful Result.
 func OK(data any) Result { return Result{Data: data} }
+
+// OKWithSummary builds a successful Result with a human-readable summary line.
+func OKWithSummary(summary string, data any) Result {
+	return Result{Data: data, Summary: summary}
+}
 
 // Fail builds a failure Result.
 func Fail(category, code, msg string, retryable bool) Result {

@@ -3,6 +3,7 @@ package inspecttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -72,17 +73,30 @@ func runNetworkBody(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		return tools.Fail(tools.CategoryProtocol, "body_decode", err.Error(), false)
 	}
 	if len(body.Body) > networkBodyMaxBytes {
-		return tools.FailWithDetails(tools.CategoryUnsupported, "body_too_large",
-			"response body exceeds page.networkBody cap; use cdp.network.streamResourceContent (requires --expose-raw-cdp)",
-			false, map[string]any{"bytes": len(body.Body), "cap": networkBodyMaxBytes})
+		return tools.Result{
+			Err: &tools.EnvelopeError{
+				Code:     "body_too_large",
+				Message:  "response body exceeds page.networkBody cap; use cdp.network.streamResourceContent (requires --expose-raw-cdp)",
+				Category: tools.CategoryUnsupported,
+				Details:  map[string]any{"bytes": len(body.Body), "cap": networkBodyMaxBytes},
+			},
+			Summary: fmt.Sprintf("Response body for %s exceeds %d-byte cap.", p.RequestID, networkBodyMaxBytes),
+		}
 	}
-	return tools.OK(struct {
-		RequestID     string `json:"requestId"`
-		Body          string `json:"body"`
-		Base64Encoded bool   `json:"base64Encoded"`
-	}{
-		RequestID:     p.RequestID,
-		Body:          body.Body,
-		Base64Encoded: body.Base64Encoded,
-	})
+	encoding := "utf-8"
+	if body.Base64Encoded {
+		encoding = "base64"
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("Fetched %d-byte %s body for %s.", len(body.Body), encoding, p.RequestID),
+		struct {
+			RequestID     string `json:"requestId"`
+			Body          string `json:"body"`
+			Base64Encoded bool   `json:"base64Encoded"`
+		}{
+			RequestID:     p.RequestID,
+			Body:          body.Body,
+			Base64Encoded: body.Base64Encoded,
+		},
+	)
 }

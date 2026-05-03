@@ -3,6 +3,7 @@ package pagetool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
@@ -63,8 +64,11 @@ func runList(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.
 		}
 		out = append(out, c)
 	}
-	return tools.OK(struct {
-		Pages       []addin.ClassifiedTarget `json:"pages"`
-		HasManifest bool                     `json:"hasManifest"`
-	}{Pages: out, HasManifest: manifest != nil})
+	return tools.OKWithSummary(
+		fmt.Sprintf("Listed %d page target(s).", len(out)),
+		struct {
+			Pages       []addin.ClassifiedTarget `json:"pages"`
+			HasManifest bool                     `json:"hasManifest"`
+		}{Pages: out, HasManifest: manifest != nil},
+	)
 }

@@ -3,6 +3,7 @@ package interacttool
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 
 	cdpproto "github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
@@ -108,11 +109,14 @@ func runFill(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.
 		}); err != nil {
 			return tools.ClassifyCDPErr("select_set_failed", err)
 		}
-		return tools.OK(struct {
-			UID  string `json:"uid"`
-			Text string `json:"text"`
-			Mode string `json:"mode"`
-		}{UID: p.UID, Text: p.Text, Mode: "select"})
+		return tools.OKWithSummary(
+			"Set <select> "+p.UID+" to "+p.Text+".",
+			struct {
+				UID  string `json:"uid"`
+				Text string `json:"text"`
+				Mode string `json:"mode"`
+			}{UID: p.UID, Text: p.Text, Mode: "select"},
+		)
 	}
 
 	// Focus the element so subsequent Input.insertText goes to it.
@@ -134,9 +138,12 @@ func runFill(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.
 	}); err != nil {
 		return tools.ClassifyCDPErr("insert_text_failed", err)
 	}
-	return tools.OK(struct {
-		UID  string `json:"uid"`
-		Text string `json:"text"`
-		Mode string `json:"mode"`
-	}{UID: p.UID, Text: p.Text, Mode: "input"})
+	return tools.OKWithSummary(
+		"Filled "+p.UID+" with "+strconv.Itoa(len(p.Text))+" character(s).",
+		struct {
+			UID  string `json:"uid"`
+			Text string `json:"text"`
+			Mode string `json:"mode"`
+		}{UID: p.UID, Text: p.Text, Mode: "input"},
+	)
 }

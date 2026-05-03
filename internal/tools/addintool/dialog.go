@@ -3,6 +3,7 @@ package addintool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/officejs"
@@ -85,7 +86,7 @@ func runOpenDialog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if err != nil {
 		return mapPayloadError(err)
 	}
-	return decodePayloadResult(out)
+	return decodePayloadResultWithSummary(out, "Opened dialog at "+p.URL+".")
 }
 
 const dialogCloseSchema = `{
@@ -163,14 +164,38 @@ func runDialogPayload(toolName string) func(context.Context, json.RawMessage, *t
 		if err != nil {
 			return mapPayloadError(err)
 		}
-		return decodePayloadResult(out)
+		summary := dialogPayloadSummary(toolName, out)
+		return decodePayloadResultWithSummary(out, summary)
 	}
 }
 
-func decodePayloadResult(raw json.RawMessage) tools.Result {
+func dialogPayloadSummary(toolName string, raw json.RawMessage) string {
+	switch toolName {
+	case "addin.dialogClose":
+		var probe struct {
+			Closed bool `json:"closed"`
+		}
+		if err := json.Unmarshal(raw, &probe); err == nil && probe.Closed {
+			return "Closed active dialog."
+		}
+		return "No active dialog handle to close."
+	case "addin.dialogSubscribe":
+		var probe struct {
+			Messages []any `json:"messages"`
+			Events   []any `json:"events"`
+		}
+		if err := json.Unmarshal(raw, &probe); err == nil {
+			return fmt.Sprintf("Drained %d message(s) and %d event(s) from dialog.", len(probe.Messages), len(probe.Events))
+		}
+		return "Drained dialog messages."
+	}
+	return ""
+}
+
+func decodePayloadResultWithSummary(raw json.RawMessage, summary string) tools.Result {
 	var data any
 	if err := json.Unmarshal(raw, &data); err != nil {
 		return tools.Fail(tools.CategoryInternal, "decode_payload_result", err.Error(), false)
 	}
-	return tools.OK(data)
+	return tools.OKWithSummary(summary, data)
 }

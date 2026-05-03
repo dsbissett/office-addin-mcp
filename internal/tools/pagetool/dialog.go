@@ -61,7 +61,14 @@ func runHandleDialog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 	if _, err := att.Conn.Send(ctx, att.SessionID, "Page.handleJavaScriptDialog", args); err != nil {
 		return tools.ClassifyCDPErr("handle_dialog_failed", err)
 	}
-	return tools.OK(struct {
-		Accepted bool `json:"accepted"`
-	}{Accepted: p.Accept})
+	verb := "Dismissed"
+	if p.Accept {
+		verb = "Accepted"
+	}
+	return tools.OKWithSummary(
+		verb+" native browser dialog.",
+		struct {
+			Accepted bool `json:"accepted"`
+		}{Accepted: p.Accept},
+	)
 }

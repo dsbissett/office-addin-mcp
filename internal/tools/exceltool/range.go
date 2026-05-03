@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -43,7 +44,45 @@ func runReadRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.readRange", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.readRange", args, func(data any) string {
+		return rangeReadSummary(data, "Read", p.Address)
+	})
+}
+
+// rangeReadSummary builds a "Read N cells from <address>." line for tools that
+// return {address, rowCount, columnCount, truncated} payloads.
+func rangeReadSummary(data any, verb, fallbackAddr string) string {
+	addr := stringField(data, "address")
+	if addr == "" {
+		addr = fallbackAddr
+	}
+	rows := numberField(data, "rowCount")
+	cols := numberField(data, "columnCount")
+	truncSuffix := ""
+	if boolField(data, "truncated") {
+		truncSuffix = " (truncated)"
+	}
+	if rows > 0 && cols > 0 {
+		return fmt.Sprintf("%s %dx%d cells from %s%s.", verb, rows, cols, addr, truncSuffix)
+	}
+	if addr != "" {
+		return fmt.Sprintf("%s %s%s.", verb, addr, truncSuffix)
+	}
+	return verb + " range."
+}
+
+func numberField(data any, key string) int {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return 0
+	}
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
 }
 
 const writeRangeSchema = `{
@@ -105,7 +144,9 @@ func runWriteRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if len(p.NumberFormat) > 0 {
 		args["numberFormat"] = json.RawMessage(p.NumberFormat)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.writeRange", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.writeRange", args, func(data any) string {
+		return rangeReadSummary(data, "Wrote", p.Address)
+	})
 }
 
 const getSelectedRangeSchema = `{
@@ -135,7 +176,13 @@ func runGetSelectedRange(ctx context.Context, raw json.RawMessage, env *tools.Ru
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.getSelectedRange", map[string]any{})
+	return runPayloadSum(ctx, env, p.selector(), "excel.getSelectedRange", map[string]any{}, func(data any) string {
+		addr := stringField(data, "address")
+		if addr == "" {
+			return "No active selection."
+		}
+		return "Selection at " + addr + "."
+	})
 }
 
 const setSelectedRangeSchema = `{
@@ -172,7 +219,9 @@ func runSetSelectedRange(ctx context.Context, raw json.RawMessage, env *tools.Ru
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.setSelectedRange", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.setSelectedRange", args, func(_ any) string {
+		return "Selected " + p.Address + "."
+	})
 }
 
 const activeRangeSchema = `{
@@ -211,7 +260,9 @@ func runActiveRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		"includeNumberFormat": p.IncludeNumberFormat,
 		"maxCells":            maxCells,
 	}
-	return runPayload(ctx, env, p.selector(), "excel.activeRange", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.activeRange", args, func(data any) string {
+		return rangeReadSummary(data, "Read active range", "")
+	})
 }
 
 const usedRangeSchema = `{
@@ -262,7 +313,9 @@ func runUsedRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.usedRange", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.usedRange", args, func(data any) string {
+		return rangeReadSummary(data, "Read used range", "")
+	})
 }
 
 const rangeTargetFields = `
@@ -322,7 +375,9 @@ func runRangeProperties(ctx context.Context, raw json.RawMessage, env *tools.Run
 	args["includeFormat"] = p.IncludeFormat
 	args["includeStyle"] = p.IncludeStyle
 	args["maxCells"] = maxCells
-	return runPayload(ctx, env, p.selector(), "excel.rangeProperties", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.rangeProperties", args, func(data any) string {
+		return rangeReadSummary(data, "Read range properties", p.Address)
+	})
 }
 
 const rangeFormulasSchema = `{
@@ -350,7 +405,9 @@ func runRangeFormulas(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 	}
 	args := p.baseArgs()
 	args["maxCells"] = maxCells
-	return runPayload(ctx, env, p.selector(), "excel.rangeFormulas", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.rangeFormulas", args, func(data any) string {
+		return rangeReadSummary(data, "Read formulas", p.Address)
+	})
 }
 
 const rangeSpecialCellsSchema = `{
@@ -390,7 +447,18 @@ func runRangeSpecialCells(ctx context.Context, raw json.RawMessage, env *tools.R
 	if p.ValueType != "" {
 		args["valueType"] = p.ValueType
 	}
-	return runPayload(ctx, env, p.selector(), "excel.rangeSpecialCells", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.rangeSpecialCells", args, func(data any) string {
+		count := numberField(data, "cellCount")
+		addr := stringField(data, "address")
+		switch {
+		case count > 0 && addr != "":
+			return fmt.Sprintf("Found %d %s cell(s) at %s.", count, p.CellType, addr)
+		case count > 0:
+			return fmt.Sprintf("Found %d %s cell(s).", count, p.CellType)
+		default:
+			return fmt.Sprintf("No %s cells found.", p.CellType)
+		}
+	})
 }
 
 const findInRangeSchema = `{
@@ -431,7 +499,17 @@ func runFindInRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	args["text"] = p.Text
 	args["completeMatch"] = p.CompleteMatch
 	args["matchCase"] = p.MatchCase
-	return runPayload(ctx, env, p.selector(), "excel.findInRange", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.findInRange", args, func(data any) string {
+		count := numberField(data, "cellCount")
+		if count == 0 {
+			return fmt.Sprintf("No matches for %q.", p.Text)
+		}
+		addr := stringField(data, "address")
+		if addr != "" {
+			return fmt.Sprintf("Found %d match(es) for %q at %s.", count, p.Text, addr)
+		}
+		return fmt.Sprintf("Found %d match(es) for %q.", count, p.Text)
+	})
 }
 
 const listConditionalFormatsSchema = `{
@@ -457,7 +535,9 @@ func runListConditionalFormats(ctx context.Context, raw json.RawMessage, env *to
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listConditionalFormats", p.baseArgs())
+	return runPayloadSum(ctx, env, p.selector(), "excel.listConditionalFormats", p.baseArgs(), func(data any) string {
+		return fmt.Sprintf("Listed %d conditional format(s).", arrayLen(data, "rules"))
+	})
 }
 
 const listDataValidationsSchema = `{
@@ -483,5 +563,7 @@ func runListDataValidations(ctx context.Context, raw json.RawMessage, env *tools
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listDataValidations", p.baseArgs())
+	return runPayloadSum(ctx, env, p.selector(), "excel.listDataValidations", p.baseArgs(), func(data any) string {
+		return fmt.Sprintf("Listed %d data validation(s).", arrayLen(data, "validations"))
+	})
 }

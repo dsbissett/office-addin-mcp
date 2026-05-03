@@ -57,9 +57,12 @@ func runHover(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	}); err != nil {
 		return tools.ClassifyCDPErr("mouse_move_failed", err)
 	}
-	return tools.OK(struct {
-		UID string  `json:"uid"`
-		X   float64 `json:"x"`
-		Y   float64 `json:"y"`
-	}{UID: p.UID, X: x, Y: y})
+	return tools.OKWithSummary(
+		"Hovered "+p.UID+".",
+		struct {
+			UID string  `json:"uid"`
+			X   float64 `json:"x"`
+			Y   float64 `json:"y"`
+		}{UID: p.UID, X: x, Y: y},
+	)
 }

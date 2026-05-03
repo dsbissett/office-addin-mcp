@@ -58,12 +58,15 @@ func (s *Server) makeHandler(t *tools.Tool) sdk.ToolHandler {
 //
 //   - Diagnostics ride in CallToolResult.Meta keyed by DiagnosticsMetaKey, so
 //     the agent-facing Content stays clean of observability fields.
-//   - On error: IsError is set and Content is one TextContent containing the
-//     JSON-encoded EnvelopeError (code, message, category, retryable, details).
+//   - When env.Summary is non-empty, a leading TextContent block carries the
+//     terse human-readable line — chat clients display this in the tool's OUT
+//     bubble before the JSON payload.
+//   - On error: IsError is set and Content is the optional summary block
+//     followed by one TextContent containing the JSON-encoded EnvelopeError.
 //   - On success: when the data payload looks like an inline image
 //     (`{mimeType, data}` with image/* mime), we emit an ImageContent block
 //     so MCP clients can render it directly. Otherwise the JSON-encoded data
-//     rides as a TextContent block.
+//     rides as a TextContent block (preceded by the summary block when set).
 //   - When emitStructured is true (the tool declared an OutputSchema), the
 //     same data is also attached as StructuredContent — MCP clients that
 //     support structured output get a typed object; older clients still see
@@ -72,18 +75,22 @@ func envelopeToResult(env tools.Envelope, emitStructured bool) *sdk.CallToolResu
 	res := &sdk.CallToolResult{
 		Meta: sdk.Meta{DiagnosticsMetaKey: env.Diagnostics},
 	}
+	var content []sdk.Content
+	if env.Summary != "" {
+		content = append(content, &sdk.TextContent{Text: env.Summary})
+	}
 	if env.OK {
 		if img, ok := imageFromData(env.Data); ok {
-			res.Content = []sdk.Content{img}
+			res.Content = append(content, img)
 			return res
 		}
 		body, err := json.Marshal(env.Data)
 		if err != nil {
 			res.IsError = true
-			res.Content = []sdk.Content{&sdk.TextContent{Text: marshalFallback(err)}}
+			res.Content = append(content, &sdk.TextContent{Text: marshalFallback(err)})
 			return res
 		}
-		res.Content = []sdk.Content{&sdk.TextContent{Text: string(body)}}
+		res.Content = append(content, &sdk.TextContent{Text: string(body)})
 		if emitStructured {
 			res.StructuredContent = env.Data
 		}
@@ -92,10 +99,10 @@ func envelopeToResult(env tools.Envelope, emitStructured bool) *sdk.CallToolResu
 	res.IsError = true
 	body, err := json.Marshal(env.Error)
 	if err != nil {
-		res.Content = []sdk.Content{&sdk.TextContent{Text: marshalFallback(err)}}
+		res.Content = append(content, &sdk.TextContent{Text: marshalFallback(err)})
 		return res
 	}
-	res.Content = []sdk.Content{&sdk.TextContent{Text: string(body)}}
+	res.Content = append(content, &sdk.TextContent{Text: string(body)})
 	return res
 }
 

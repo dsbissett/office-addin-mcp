@@ -3,6 +3,7 @@ package lifecycletool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 
 	"github.com/dsbissett/office-addin-mcp/internal/launch"
@@ -57,10 +58,10 @@ func runStop(_ context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Re
 		if env != nil && env.SetManifest != nil {
 			env.SetManifest(nil)
 		}
-		return tools.OK(map[string]any{
-			"stopped": stopped,
-			"all":     true,
-		})
+		return tools.OKWithSummary(
+			fmt.Sprintf("Stopped %d tracked launch(es).", stopped),
+			map[string]any{"stopped": stopped, "all": true},
+		)
 	}
 
 	manifestPath := p.ManifestPath
@@ -83,10 +84,10 @@ func runStop(_ context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Re
 	}
 
 	if _, ok := launch.LookupLaunch(manifestPath); !ok {
-		return tools.OK(map[string]any{
-			"stopped":      0,
-			"manifestPath": manifestPath,
-		})
+		return tools.OKWithSummary(
+			"No tracked launch matched "+manifestPath+".",
+			map[string]any{"stopped": 0, "manifestPath": manifestPath},
+		)
 	}
 	if err := launch.StopExcel(manifestPath); err != nil {
 		le := launch.AsLaunchError(err)
@@ -97,15 +98,23 @@ func runStop(_ context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Re
 				details["output"] = le.Output
 			}
 		}
-		return tools.FailWithDetails(tools.CategoryInternal, "stop_failed", err.Error(), false, details)
+		return tools.Result{
+			Err: &tools.EnvelopeError{
+				Code:     "stop_failed",
+				Message:  err.Error(),
+				Category: tools.CategoryInternal,
+				Details:  details,
+			},
+			Summary: "Stop failed: " + err.Error(),
+		}
 	}
 	if env != nil && env.SetManifest != nil && env.Manifest != nil {
 		if cur := env.Manifest(); cur != nil && cur.Path == manifestPath {
 			env.SetManifest(nil)
 		}
 	}
-	return tools.OK(map[string]any{
-		"stopped":      1,
-		"manifestPath": manifestPath,
-	})
+	return tools.OKWithSummary(
+		"Stopped launch for "+manifestPath+".",
+		map[string]any{"stopped": 1, "manifestPath": manifestPath},
+	)
 }

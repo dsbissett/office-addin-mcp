@@ -3,6 +3,7 @@ package interacttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -52,7 +53,10 @@ func runTypeText(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 	}); err != nil {
 		return tools.ClassifyCDPErr("insert_text_failed", err)
 	}
-	return tools.OK(struct {
-		Text string `json:"text"`
-	}{Text: p.Text})
+	return tools.OKWithSummary(
+		fmt.Sprintf("Typed %d character(s) at focused element.", len(p.Text)),
+		struct {
+			Text string `json:"text"`
+		}{Text: p.Text},
+	)
 }

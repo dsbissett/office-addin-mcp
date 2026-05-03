@@ -54,11 +54,17 @@ func runNavigate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		return tools.ClassifyCDPErr("navigate_failed", err)
 	}
 	if res.ErrorText != "" {
-		return tools.Fail(tools.CategoryProtocol, "navigate_error", res.ErrorText, false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "navigate_error", Message: res.ErrorText, Category: tools.CategoryProtocol},
+			Summary: "Navigation to " + p.URL + " failed: " + res.ErrorText,
+		}
 	}
-	return tools.OK(struct {
-		FrameID  string `json:"frameId"`
-		LoaderID string `json:"loaderId,omitempty"`
-		URL      string `json:"url"`
-	}{FrameID: res.FrameID, LoaderID: res.LoaderID, URL: p.URL})
+	return tools.OKWithSummary(
+		"Navigated to "+p.URL+".",
+		struct {
+			FrameID  string `json:"frameId"`
+			LoaderID string `json:"loaderId,omitempty"`
+			URL      string `json:"url"`
+		}{FrameID: res.FrameID, LoaderID: res.LoaderID, URL: p.URL},
+	)
 }

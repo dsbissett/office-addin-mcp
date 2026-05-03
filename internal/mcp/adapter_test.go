@@ -203,6 +203,49 @@ func TestImageFromData_RejectsNonImage(t *testing.T) {
 	}
 }
 
+func TestEnvelopeToResultPrependsSummaryBlock(t *testing.T) {
+	// When a tool sets Summary, the adapter prepends a TextContent block
+	// carrying the human-readable line ahead of the JSON payload. Chat
+	// clients render that line in the OUT bubble.
+	envOK := tools.Envelope{OK: true, Data: map[string]any{"answer": float64(42)}, Summary: "Returned 42."}
+	got := envelopeToResult(envOK, false)
+	if len(got.Content) != 2 {
+		t.Fatalf("len(Content)=%d, want 2 (summary + payload)", len(got.Content))
+	}
+	first, ok := got.Content[0].(*sdk.TextContent)
+	if !ok || first.Text != "Returned 42." {
+		t.Errorf("first content=%+v, want TextContent{Returned 42.}", got.Content[0])
+	}
+	second, ok := got.Content[1].(*sdk.TextContent)
+	if !ok {
+		t.Fatalf("second content type=%T, want *TextContent", got.Content[1])
+	}
+	var asMap map[string]any
+	if err := json.Unmarshal([]byte(second.Text), &asMap); err != nil {
+		t.Fatalf("payload not JSON: %v", err)
+	}
+	if asMap["answer"] != float64(42) {
+		t.Errorf("payload.answer=%v, want 42", asMap["answer"])
+	}
+
+	// Failure with summary: IsError true, summary still leads the content.
+	envErr := tools.Envelope{
+		OK:      false,
+		Error:   &tools.EnvelopeError{Code: "x", Message: "y", Category: tools.CategoryInternal},
+		Summary: "Failed: y.",
+	}
+	gotErr := envelopeToResult(envErr, false)
+	if !gotErr.IsError {
+		t.Fatal("IsError=false, want true")
+	}
+	if len(gotErr.Content) != 2 {
+		t.Fatalf("err len(Content)=%d, want 2", len(gotErr.Content))
+	}
+	if first, _ := gotErr.Content[0].(*sdk.TextContent); first == nil || first.Text != "Failed: y." {
+		t.Errorf("error summary block missing; got=%+v", gotErr.Content[0])
+	}
+}
+
 func TestEnvelopeToResultEmitsStructuredContent(t *testing.T) {
 	// Tools that declare an OutputSchema get StructuredContent populated
 	// alongside the JSON-encoded TextContent. Tools without OutputSchema

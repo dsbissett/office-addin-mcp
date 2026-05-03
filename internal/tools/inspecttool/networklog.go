@@ -3,6 +3,7 @@ package inspecttool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -84,10 +85,13 @@ func runNetworkLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	buf := env.EventBuf(session.NetworkBufKind, att.SessionID, p.MaxBuffer)
 	if p.Clear {
 		buf.Clear()
-		return tools.OK(networkLogResponse{
-			TargetID: att.Target.TargetID,
-			Records:  []networkRecord{},
-		})
+		return tools.OKWithSummary(
+			"Cleared network buffer.",
+			networkLogResponse{
+				TargetID: att.Target.TargetID,
+				Records:  []networkRecord{},
+			},
+		)
 	}
 
 	res := buf.Drain(session.DrainOpts{
@@ -116,7 +120,14 @@ func runNetworkLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if lastFiltered > out.LastSeq {
 		out.LastSeq = lastFiltered
 	}
-	return tools.OK(out)
+	suffix := ""
+	if out.Dropped {
+		suffix = " (buffer overflowed; older entries dropped)"
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("Drained %d network record(s)%s.", len(records), suffix),
+		out,
+	)
 }
 
 type networkLogResponse struct {

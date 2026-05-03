@@ -3,6 +3,7 @@ package addintool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/officejs"
@@ -58,5 +59,23 @@ func runCFRuntimeInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 	if err != nil {
 		return mapPayloadError(err)
 	}
-	return decodePayloadResult(out)
+	summary := "Probed custom-functions runtime."
+	var probe struct {
+		Available bool           `json:"available"`
+		Mappings  map[string]any `json:"mappings"`
+		Functions []any          `json:"functions"`
+	}
+	if err := json.Unmarshal(out, &probe); err == nil {
+		switch {
+		case !probe.Available:
+			summary = "Custom-functions runtime not exposed in target."
+		case len(probe.Functions) > 0:
+			summary = fmt.Sprintf("Found %d registered custom function(s).", len(probe.Functions))
+		case len(probe.Mappings) > 0:
+			summary = fmt.Sprintf("Found %d custom-function mapping(s).", len(probe.Mappings))
+		default:
+			summary = "Custom-functions runtime exposed but no functions registered."
+		}
+	}
+	return decodePayloadResultWithSummary(out, summary)
 }

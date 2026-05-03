@@ -95,21 +95,28 @@ func runSnapshot(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		truncated = true
 	}
 
-	return tools.OK(struct {
-		TargetID  string `json:"targetId"`
-		URL       string `json:"url"`
-		Title     string `json:"title,omitempty"`
-		NodeCount int    `json:"nodeCount"`
-		Snapshot  string `json:"snapshot"`
-		Truncated bool   `json:"truncated,omitempty"`
-	}{
-		TargetID:  att.Target.TargetID,
-		URL:       att.Target.URL,
-		Title:     att.Target.Title,
-		NodeCount: len(nodes),
-		Snapshot:  text,
-		Truncated: truncated,
-	})
+	suffix := ""
+	if truncated {
+		suffix = " (truncated)"
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("Captured snapshot of %d node(s)%s.", len(nodes), suffix),
+		struct {
+			TargetID  string `json:"targetId"`
+			URL       string `json:"url"`
+			Title     string `json:"title,omitempty"`
+			NodeCount int    `json:"nodeCount"`
+			Snapshot  string `json:"snapshot"`
+			Truncated bool   `json:"truncated,omitempty"`
+		}{
+			TargetID:  att.Target.TargetID,
+			URL:       att.Target.URL,
+			Title:     att.Target.Title,
+			NodeCount: len(nodes),
+			Snapshot:  text,
+			Truncated: truncated,
+		},
+	)
 }
 
 // axTreeResult is the subset of Accessibility.getFullAXTree we consume.

@@ -44,5 +44,7 @@ func runRunScript(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 	if len(p.ScriptArgs) > 0 {
 		args["scriptArgs"] = json.RawMessage(p.ScriptArgs)
 	}
-	return runPayload(ctx, env, p.selector(), "excel.runScript", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.runScript", args, func(_ any) string {
+		return "Ran custom Excel.run script."
+	})
 }

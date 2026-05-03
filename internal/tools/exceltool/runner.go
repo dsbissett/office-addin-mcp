@@ -25,17 +25,25 @@ const targetSelectorBase = `
 // flag truncated=true; mirrors the reference excel-webview2-mcp behavior.
 const maxCells = 1000
 
-// runPayload is the shared scaffolding every excel.* tool calls. The
+// runPayloadSum is the shared scaffolding every excel.* tool calls. The
 // dispatcher hands us a connection (one-shot or session-pooled) and an
 // AttachedTarget; we run the named payload through the Office.js executor
-// and translate outcomes to a tools.Result.
-func runPayload(ctx context.Context, env *tools.RunEnv, sel tools.TargetSelector, payload string, args any) tools.Result {
+// and translate outcomes to a tools.Result. summaryFn receives the decoded
+// payload data and returns a past-tense one-liner that chat clients surface
+// in the tool's OUT bubble. Pass nil to skip summary generation. Failures
+// get a generic summary built from the EnvelopeError message.
+func runPayloadSum(ctx context.Context, env *tools.RunEnv, sel tools.TargetSelector, payload string, args any, summaryFn func(any) string) tools.Result {
 	att, err := env.Attach(ctx, sel)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			return tools.ClassifyCDPErr("attach_failed", err)
+			res := tools.ClassifyCDPErr("attach_failed", err)
+			res.Summary = "Excel attach failed: " + err.Error()
+			return res
 		}
-		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "attach_failed", Message: err.Error(), Category: tools.CategoryNotFound},
+			Summary: "Excel attach failed: " + err.Error(),
+		}
 	}
 
 	exec := officejs.New(att.Conn, att.SessionID)
@@ -50,20 +58,68 @@ func runPayload(ctx context.Context, env *tools.RunEnv, sel tools.TargetSelector
 					details["debugInfo"] = di
 				}
 			}
-			return tools.FailWithDetails(tools.CategoryOfficeJS, codeOrDefault(oerr.Code), oerr.Message, false, details)
+			res := tools.FailWithDetails(tools.CategoryOfficeJS, codeOrDefault(oerr.Code), oerr.Message, false, details)
+			res.Summary = "Office.js error: " + oerr.Message
+			return res
 		}
 		var pe *officejs.ProtocolException
 		if errors.As(err, &pe) {
-			return tools.Fail(tools.CategoryProtocol, "payload_protocol_exception", pe.Text, false)
+			return tools.Result{
+				Err:     &tools.EnvelopeError{Code: "payload_protocol_exception", Message: pe.Text, Category: tools.CategoryProtocol},
+				Summary: "Payload protocol exception: " + pe.Text,
+			}
 		}
-		return tools.ClassifyCDPErr("payload_failed", err)
+		res := tools.ClassifyCDPErr("payload_failed", err)
+		res.Summary = "Excel payload failed: " + err.Error()
+		return res
 	}
 
 	var data any
 	if err := json.Unmarshal(raw, &data); err != nil {
-		return tools.Fail(tools.CategoryInternal, "decode_payload_result", err.Error(), false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "decode_payload_result", Message: err.Error(), Category: tools.CategoryInternal},
+			Summary: "Failed to decode Office.js payload result.",
+		}
 	}
-	return tools.OK(data)
+	res := tools.OK(data)
+	if summaryFn != nil {
+		res.Summary = summaryFn(data)
+	}
+	return res
+}
+
+// arrayLen returns the length of data[key] when it's a JSON array; otherwise 0.
+// Used by list-style summaries that count items in the payload.
+func arrayLen(data any, key string) int {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return 0
+	}
+	arr, ok := m[key].([]any)
+	if !ok {
+		return 0
+	}
+	return len(arr)
+}
+
+// stringField returns data[key] when it's a string; otherwise "".
+func stringField(data any, key string) string {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return ""
+	}
+	s, _ := m[key].(string)
+	return s
+}
+
+// boolField returns data[key] when it's a bool; otherwise false.
+func boolField(data any, key string) bool {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return false
+	}
+	b, _ := m[key].(bool)
+	return b
 }
 
 func codeOrDefault(code string) string {

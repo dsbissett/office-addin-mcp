@@ -35,10 +35,14 @@ const (
 )
 
 // Envelope is the uniform tool result. Either Data or Error is set, never both.
+//
+// Summary is an optional one-line human-readable message forwarded from the
+// tool. The MCP adapter prepends it as a TextContent block when present.
 type Envelope struct {
 	OK          bool           `json:"ok"`
 	Data        any            `json:"data,omitempty"`
 	Error       *EnvelopeError `json:"error,omitempty"`
+	Summary     string         `json:"summary,omitempty"`
 	Diagnostics Diagnostics    `json:"diagnostics"`
 }
 

@@ -48,9 +48,19 @@ func runSelectTarget(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 
 	att, err := env.Attach(ctx, tools.TargetSelector{TargetID: p.TargetID, URLPattern: p.URLPattern})
 	if err != nil {
-		return tools.Fail(tools.CategoryNotFound, "resolve_target_failed", err.Error(), false)
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "resolve_target_failed", Message: err.Error(), Category: tools.CategoryNotFound},
+			Summary: "Could not resolve CDP target: " + err.Error(),
+		}
 	}
-	return tools.OK(struct {
-		Target cdpproto.TargetInfo `json:"target"`
-	}{Target: att.Target})
+	label := att.Target.Title
+	if label == "" {
+		label = att.Target.URL
+	}
+	return tools.OKWithSummary(
+		"Selected CDP target "+label+".",
+		struct {
+			Target cdpproto.TargetInfo `json:"target"`
+		}{Target: att.Target},
+	)
 }

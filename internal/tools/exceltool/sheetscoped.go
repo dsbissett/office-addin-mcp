@@ -3,6 +3,7 @@ package exceltool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
@@ -35,7 +36,9 @@ func runListComments(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listComments", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.listComments", args, func(data any) string {
+		return fmt.Sprintf("Listed %d comment(s).", arrayLen(data, "comments"))
+	})
 }
 
 // ListShapes returns the excel.listShapes tool definition.
@@ -57,5 +60,7 @@ func runListShapes(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	return runPayload(ctx, env, p.selector(), "excel.listShapes", args)
+	return runPayloadSum(ctx, env, p.selector(), "excel.listShapes", args, func(data any) string {
+		return fmt.Sprintf("Listed %d shape(s).", arrayLen(data, "shapes"))
+	})
 }

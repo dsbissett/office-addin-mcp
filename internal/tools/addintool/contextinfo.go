@@ -92,5 +92,26 @@ func runContextInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	if err := json.Unmarshal(out, &data); err != nil {
 		return tools.Fail(tools.CategoryInternal, "decode_payload_result", err.Error(), false)
 	}
-	return tools.OK(data)
+	host, _ := contextInfoHost(data)
+	summary := "Returned Office context info."
+	if host != "" {
+		summary = "Returned Office context (host=" + host + ")."
+	}
+	return tools.OKWithSummary(summary, data)
+}
+
+func contextInfoHost(data any) (string, bool) {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	if ctx, ok := m["context"].(map[string]any); ok {
+		if h, ok := ctx["host"].(string); ok {
+			return h, true
+		}
+	}
+	if h, ok := m["host"].(string); ok {
+		return h, true
+	}
+	return "", false
 }
