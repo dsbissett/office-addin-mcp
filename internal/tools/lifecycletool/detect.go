@@ -1,7 +1,7 @@
 // Package lifecycletool registers the addin.* tools that detect, launch,
-// and stop an Office Excel add-in via office-addin-debugging. These tools
-// run without a CDP connection — they manage the WebView2 lifecycle that
-// every other tool depends on.
+// and stop an Office add-in via office-addin-debugging. These tools run
+// without a CDP connection — they manage the WebView2 lifecycle that every
+// other tool depends on.
 package lifecycletool
 
 import (
@@ -35,7 +35,7 @@ func Detect() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.detect",
 		Title:       "Detect Add-in Project",
-		Description: "Detect an Office Excel add-in project from a working directory. Walks up to 5 levels looking for package.json and a workbook-scoped manifest.{xml,json}. Returns project metadata used by addin.launch.",
+		Description: "Detect an Office add-in project from a working directory. Walks up to 5 levels looking for package.json and a manifest.{xml,json} declaring any host (Workbook, Document, Mailbox, Presentation, Notebook). Returns project metadata used by addin.launch.",
 		Schema:      json.RawMessage(detectSchema),
 		Annotations: &tools.Annotations{
 			ReadOnlyHint:    true,

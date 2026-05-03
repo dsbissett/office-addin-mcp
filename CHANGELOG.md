@@ -4,6 +4,36 @@
 
 ### Changed
 
+- **Multi-host F3 — generalized add-in manifest detection.**
+  `launch.DetectAddin` only accepted manifests that declared the Excel
+  Workbook host (XML manifests with `<Host Name="Workbook"/>` or JSON
+  manifests with a `workbook` scope), so a Word / Outlook / PowerPoint /
+  OneNote project would fail detection even though everything downstream
+  is host-agnostic. Reasoning: the host-specific gate served no purpose
+  beyond Phase-0 scoping — the launcher, CDP wiring, and Office.js
+  payload runner all care about presence of an add-in, not which host
+  it targets — so widening the gate is the cheapest path to multi-host
+  support.
+  - `internal/launch/detect.go` — renamed `isWorkbookXMLManifest` →
+    `isOfficeXMLManifest` and dropped the `<Host Name="Workbook">`
+    regex check; presence of `<OfficeApp` is now sufficient. Renamed
+    `isWorkbookJSONManifest` → `isOfficeJSONManifest` and accepted any
+    non-empty `extensions[].requirements.scopes` (was hard-coded to
+    `"workbook"`). Updated `ErrNoProject` message and the `Project`
+    struct's doc comment to drop "Excel".
+  - `internal/launch/detect_test.go` — flipped
+    `TestDetectAddin_NonWorkbookXMLRejected` to
+    `TestDetectAddin_NonWorkbookXMLAccepted`: a manifest with
+    `<Host Name="Document"/>` (Word) is now a valid project. All other
+    fixture-based tests pass unchanged because their `<Host
+    Name="Workbook">` markup still satisfies the relaxed `<OfficeApp`
+    check.
+  - `internal/tools/lifecycletool/detect.go` — package doc and
+    `addin.detect` tool description no longer say "Excel" or
+    "workbook-scoped"; the description now lists the supported hosts
+    (Workbook, Document, Mailbox, Presentation, Notebook) explicitly so
+    agents can tell at a glance the tool isn't Excel-only.
+
 - **Multi-host F2 — generalized Office.js preamble for all hosts.**
   `internal/js/_preamble.js` only exposed `__runExcel` and the
   `__ensureOffice` gate hard-failed when `globalThis.Excel` was
