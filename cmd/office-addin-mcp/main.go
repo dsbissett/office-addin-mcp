@@ -46,7 +46,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		wsEndpoint     = fs.String("ws-endpoint", "", "Direct browser WebSocket endpoint (overrides --browser-url)")
 		logFile        = fs.String("log-file", "", "Append diagnostic logs to this file (defaults to stderr)")
 		logLevel       = fs.String("log-level", "info", "Minimum slog level: debug, info, warn, error")
-		launchExcel    = fs.Bool("launch-excel", false, "On startup, if no CDP endpoint is reachable, detect the add-in project under cwd and run addin.launch automatically. Equivalent to calling addin.ensureRunning at boot.")
+		launchAddin    = fs.Bool("launch-addin", false, "On startup, if no CDP endpoint is reachable, detect the add-in project under cwd and run addin.launch automatically. Works for any Office host (Excel, Word, Outlook, PowerPoint, OneNote). Equivalent to calling addin.ensureRunning at boot.")
+		launchExcel    = fs.Bool("launch-excel", false, "Deprecated alias for --launch-addin. Kept for backwards compatibility.")
 		allowDangerous = fs.Bool("allow-dangerous-cdp", false, "Allow CDP methods marked dangerous (Browser.crash, Runtime.terminateExecution, ...). May also be set via "+dangerousEnvVar+"=1.")
 		exposeRawCDP   = fs.Bool("expose-raw-cdp", false, "Also register the ~411 code-generated cdp.* tools (raw Chrome DevTools Protocol). May also be set via "+exposeRawCDPEnvVar+"=1.")
 		cdpDomains     = fs.String("cdp-domains", "", "Comma-separated CDP domains to expose (e.g. DOM,Page,Runtime,Input). When non-empty implies --expose-raw-cdp; only the named domains' tools register. See --list-cdp-domains.")
@@ -118,16 +119,16 @@ func run(args []string, stdout, stderr io.Writer) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// --launch-excel: probe the configured port and, if nothing's listening,
-	// detect+launch from cwd before the MCP server starts. Skipped silently
-	// when the user already pinned an explicit endpoint — they presumably
-	// know what they're doing.
-	if *launchExcel && endpoint.WSEndpoint == "" && endpoint.BrowserURL == "" {
-		if launched, err := autoLaunchExcel(ctx); err != nil {
-			slog.Warn("--launch-excel could not bring up Excel", "error", err)
+	// --launch-addin (or its deprecated --launch-excel alias): probe the
+	// configured port and, if nothing's listening, detect+launch from cwd
+	// before the MCP server starts. Skipped silently when the user already
+	// pinned an explicit endpoint — they presumably know what they're doing.
+	if (*launchAddin || *launchExcel) && endpoint.WSEndpoint == "" && endpoint.BrowserURL == "" {
+		if launched, err := autoLaunchAddin(ctx); err != nil {
+			slog.Warn("--launch-addin could not bring up the Office host", "error", err)
 		} else if launched != "" {
 			endpoint.BrowserURL = launched
-			slog.Info("--launch-excel: CDP endpoint ready", "browser_url", launched)
+			slog.Info("--launch-addin: CDP endpoint ready", "browser_url", launched)
 		}
 	}
 
@@ -147,10 +148,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// autoLaunchExcel implements the --launch-excel startup hook. Returns the
-// resolved CDP browser URL on success, "" if no add-in could be found
-// (caller treats that as a soft warning — the server still starts).
-func autoLaunchExcel(ctx context.Context) (string, error) {
+// autoLaunchAddin implements the --launch-addin startup hook (also fired by
+// the deprecated --launch-excel alias). Returns the resolved CDP browser URL
+// on success, "" if no add-in could be found (caller treats that as a soft
+// warning — the server still starts). Host-agnostic: launch.DetectAddin and
+// launch.LaunchIfNeeded both accept any Office host as of F3.
+func autoLaunchAddin(ctx context.Context) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getcwd: %w", err)
@@ -237,7 +240,8 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --ws-endpoint           Direct browser WebSocket URL (overrides --browser-url)")
 	fmt.Fprintln(w, "  --log-file              Append diagnostics here instead of stderr")
 	fmt.Fprintln(w, "  --log-level             slog level: debug|info|warn|error (default info)")
-	fmt.Fprintln(w, "  --launch-excel          Auto-detect+launch the add-in under cwd at startup if no CDP endpoint is reachable")
+	fmt.Fprintln(w, "  --launch-addin          Auto-detect+launch the Office add-in under cwd at startup if no CDP endpoint is reachable")
+	fmt.Fprintln(w, "  --launch-excel          Deprecated alias for --launch-addin")
 	fmt.Fprintln(w, "  --allow-dangerous-cdp   Permit dangerous CDP methods (env: "+dangerousEnvVar+")")
 	fmt.Fprintln(w, "  --expose-raw-cdp        Register the raw cdp.* tool surface (env: "+exposeRawCDPEnvVar+")")
 	fmt.Fprintln(w, "  --cdp-domains           Comma-separated CDP domains to expose (e.g. DOM,Page,Runtime); implies --expose-raw-cdp")

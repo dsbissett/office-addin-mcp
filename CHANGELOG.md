@@ -4,6 +4,23 @@
 
 ### Changed
 
+- **Multi-host F9 — `--launch-addin` flag (host-agnostic) with
+  `--launch-excel` kept as a deprecated alias.** The boot-time
+  auto-launch flag was named `--launch-excel`, which read as
+  Excel-specific even though the underlying `launch.LaunchIfNeeded`
+  has been host-agnostic since F3. Reasoning: rename to a name that
+  matches reality, but don't break scripts and `mcp.json` snippets
+  pinned to the old flag.
+  - `cmd/office-addin-mcp/main.go` — added `--launch-addin` flag.
+    `--launch-excel` is kept and now documents itself as a "Deprecated
+    alias for --launch-addin." The boot guard fires when *either*
+    flag is set (`*launchAddin || *launchExcel`). Renamed
+    `autoLaunchExcel` → `autoLaunchAddin`; the body is unchanged
+    because `launch.DetectAddin` already accepts any Office host (F3).
+    The two `slog.{Warn,Info}` lines that mention the flag now name
+    `--launch-addin` so log readers see the new spelling. `writeUsage`
+    lists both flags with the alias clearly labelled deprecated.
+
 - **Multi-host F8 — extended `StandardRequirementSets` for
   Word/Outlook/PowerPoint/OneNote.** `addin.contextInfo` only probed
   Excel and shared-runtime sets, so an agent calling it from a Word
