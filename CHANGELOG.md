@@ -4,6 +4,42 @@
 
 ### Added
 
+- **Multi-host F6 — PowerPoint add-in tool surface (6 tools).** Adds
+  the PowerPoint host package against the F1 runner. Like F4/F5, the
+  package's `Register()` is exported but not yet wired into the live
+  MCP registry; F7's bulk wiring step turns the full multi-host
+  surface on at once. Reasoning: the slide / shape / selection
+  read-out pattern is enough to build "explain this deck" / "summarize
+  every slide" agent flows, while a single `addSlide` write plus the
+  permissive `runScript` escape hatch covers the long tail of
+  composition use-cases without bloating the surface.
+  - `internal/js/powerpoint_*.js` *(6 new payloads)* —
+    `powerpoint_read_presentation.js` (title + slideCount),
+    `powerpoint_read_slides.js` (id + shape names per slide),
+    `powerpoint_read_slide.js` (per-shape geometry on one slide;
+    out-of-range index throws `powerpoint_slide_out_of_range`),
+    `powerpoint_add_slide.js` (append blank slide, return id),
+    `powerpoint_read_selection.js` (ids of currently selected slides),
+    `powerpoint_run_script.js` (escape hatch via `PowerPoint.run`).
+    All dispatch through `__runPowerPoint` (F2).
+  - `internal/tools/powerpointtool/runner.go` *(new package)* —
+    package forwarder `runPayloadSum` calling
+    `officetool.RunPayload(..., "PowerPoint")`, plus the same
+    `arrayLen` / `stringField` / `emptySelectorParams` helpers as the
+    other host packages and a `numberField` helper used by the
+    presentation-summary line.
+  - `internal/tools/powerpointtool/presentation.go` — constructors
+    for the five non-script tools (`powerpoint.readPresentation`,
+    `powerpoint.readSlides`, `powerpoint.readSlide`,
+    `powerpoint.addSlide`, `powerpoint.readSelection`).
+  - `internal/tools/powerpointtool/script.go` —
+    `powerpoint.runScript` escape hatch, mirroring `excel.runScript`
+    but wrapped with `__runPowerPoint`.
+  - `internal/tools/powerpointtool/register.go` — `Register(r)`
+    exported but not yet called from `internal/mcp/registry.go`.
+  - `internal/tools/powerpointtool/register_test.go` — asserts
+    exactly 6 tools register and every one has an embedded JS payload.
+
 - **Multi-host F5 — Outlook add-in tool surface (7 tools).** Adds the
   Outlook host package against the F1 runner. Outlook is the odd one
   out: it has no batched-context `<Host>.run` API, and most of its
