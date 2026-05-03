@@ -119,11 +119,15 @@ func TestDetectAddin_DevServerPortFromString(t *testing.T) {
 	}
 }
 
-func TestDetectAddin_NonWorkbookXMLRejected(t *testing.T) {
+func TestDetectAddin_NonWorkbookXMLAccepted(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, filepath.Join(dir, "package.json"), `{}`)
 	writeFile(t, filepath.Join(dir, "manifest.xml"), `<OfficeApp><Hosts><Host Name="Document"/></Hosts></OfficeApp>`)
-	if _, err := DetectAddin(dir); err == nil {
-		t.Fatal("DetectAddin: expected error for non-Workbook host")
+	project, err := DetectAddin(dir)
+	if err != nil {
+		t.Fatalf("DetectAddin: %v", err)
+	}
+	if project.ManifestKind != ManifestKindXML {
+		t.Errorf("ManifestKind = %s, want xml", project.ManifestKind)
 	}
 }

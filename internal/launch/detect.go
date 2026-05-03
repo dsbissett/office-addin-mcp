@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
 )
 
 // PackageManager identifies which Node package manager owns the project root.
@@ -39,7 +38,8 @@ type DevServer struct {
 	Port   int    `json:"port"`
 }
 
-// Project is a detected Office Excel add-in project.
+// Project is a detected Office add-in project (Excel, Word, Outlook,
+// PowerPoint, OneNote — any host with a package.json + manifest pair).
 type Project struct {
 	Root           string         `json:"root"`
 	ManifestPath   string         `json:"manifestPath"`
@@ -50,14 +50,14 @@ type Project struct {
 
 // ErrNoProject signals that no add-in project could be detected at or above
 // the supplied directory.
-var ErrNoProject = errors.New("launch: no Excel add-in project detected")
+var ErrNoProject = errors.New("launch: no Office add-in project detected")
 
 // maxDetectDepth limits the upward walk searching for package.json so that a
 // stray repo root never escapes the user's working directory.
 const maxDetectDepth = 5
 
 // DetectAddin walks up from cwd looking for a package.json adjacent to a
-// manifest.{xml,json} that targets the Excel Workbook host. Returns
+// manifest.{xml,json} that declares any Office add-in host. Returns
 // ErrNoProject when none of the candidates match.
 func DetectAddin(cwd string) (*Project, error) {
 	root, err := findPackageRoot(cwd)
@@ -122,27 +122,27 @@ func readPackageJSON(path string) (*packageJSON, error) {
 
 func detectManifest(root string) (string, ManifestKind, error) {
 	xmlPath := filepath.Join(root, "manifest.xml")
-	if isWorkbookXMLManifest(xmlPath) {
+	if isOfficeXMLManifest(xmlPath) {
 		return xmlPath, ManifestKindXML, nil
 	}
 	jsonPath := filepath.Join(root, "manifest.json")
-	if isWorkbookJSONManifest(jsonPath) {
+	if isOfficeJSONManifest(jsonPath) {
 		return jsonPath, ManifestKindJSON, nil
 	}
 	return "", "", ErrNoProject
 }
 
-var (
-	reOfficeApp = regexp.MustCompile(`(?i)<OfficeApp\b`)
-	reHostName  = regexp.MustCompile(`(?i)<Host\b[^>]*Name\s*=\s*["']Workbook["']`)
-)
+var reOfficeApp = regexp.MustCompile(`(?i)<OfficeApp\b`)
 
-func isWorkbookXMLManifest(path string) bool {
+// isOfficeXMLManifest accepts any well-formed XML add-in manifest regardless
+// of which <Host Name="…"/> it declares (Workbook, Document, Presentation,
+// Notebook, Mailbox).
+func isOfficeXMLManifest(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	return reOfficeApp.Match(data) && reHostName.Match(data)
+	return reOfficeApp.Match(data)
 }
 
 type jsonManifest struct {
@@ -153,7 +153,9 @@ type jsonManifest struct {
 	} `json:"extensions"`
 }
 
-func isWorkbookJSONManifest(path string) bool {
+// isOfficeJSONManifest accepts any unified Office manifest with at least one
+// non-empty extension scope (workbook, document, mail, presentation, notebook).
+func isOfficeJSONManifest(path string) bool {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return false
@@ -163,10 +165,8 @@ func isWorkbookJSONManifest(path string) bool {
 		return false
 	}
 	for _, ext := range m.Extensions {
-		for _, scope := range ext.Requirements.Scopes {
-			if strings.EqualFold(scope, "workbook") {
-				return true
-			}
+		if len(ext.Requirements.Scopes) > 0 {
+			return true
 		}
 	}
 	return false

@@ -27,9 +27,6 @@ async function __ensureOffice() {
   if (typeof globalThis.Office === 'undefined') {
     throw __officeError('office_unavailable', 'Office.js is not loaded in this target.');
   }
-  if (typeof globalThis.Excel === 'undefined') {
-    throw __officeError('excel_unavailable', 'Excel global is not available in this target.');
-  }
   await Promise.race([
     new Promise((resolve, reject) => {
       try {
@@ -91,6 +88,58 @@ async function __runExcel(fn) {
   } catch (e) {
     if (e && e.__officeError) throw e;
     const code = (e && e.code) || 'excel_run_failed';
+    const message = (e && e.message) || String(e);
+    const debugInfo = e && e.debugInfo;
+    throw __officeError(code, message, { debugInfo });
+  }
+}
+
+async function __runWord(fn) {
+  await __ensureOffice();
+  try {
+    return await Word.run(async (context) => fn(context));
+  } catch (e) {
+    if (e && e.__officeError) throw e;
+    const code = (e && e.code) || 'word_run_failed';
+    const message = (e && e.message) || String(e);
+    const debugInfo = e && e.debugInfo;
+    throw __officeError(code, message, { debugInfo });
+  }
+}
+
+async function __runPowerPoint(fn) {
+  await __ensureOffice();
+  try {
+    return await PowerPoint.run(async (context) => fn(context));
+  } catch (e) {
+    if (e && e.__officeError) throw e;
+    const code = (e && e.code) || 'powerpoint_run_failed';
+    const message = (e && e.message) || String(e);
+    const debugInfo = e && e.debugInfo;
+    throw __officeError(code, message, { debugInfo });
+  }
+}
+
+async function __runOneNote(fn) {
+  await __ensureOffice();
+  try {
+    return await OneNote.run(async (context) => fn(context));
+  } catch (e) {
+    if (e && e.__officeError) throw e;
+    const code = (e && e.code) || 'onenote_run_failed';
+    const message = (e && e.message) || String(e);
+    const debugInfo = e && e.debugInfo;
+    throw __officeError(code, message, { debugInfo });
+  }
+}
+
+async function __runOutlook(fn) {
+  await __ensureOffice();
+  try {
+    return await fn(Office.context.mailbox);
+  } catch (e) {
+    if (e && e.__officeError) throw e;
+    const code = (e && e.code) || 'outlook_run_failed';
     const message = (e && e.message) || String(e);
     const debugInfo = e && e.debugInfo;
     throw __officeError(code, message, { debugInfo });

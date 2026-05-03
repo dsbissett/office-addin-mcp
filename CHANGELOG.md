@@ -4,6 +4,273 @@
 
 ### Changed
 
+- **Multi-host F9 — `--launch-addin` flag (host-agnostic) with
+  `--launch-excel` kept as a deprecated alias.** The boot-time
+  auto-launch flag was named `--launch-excel`, which read as
+  Excel-specific even though the underlying `launch.LaunchIfNeeded`
+  has been host-agnostic since F3. Reasoning: rename to a name that
+  matches reality, but don't break scripts and `mcp.json` snippets
+  pinned to the old flag.
+  - `cmd/office-addin-mcp/main.go` — added `--launch-addin` flag.
+    `--launch-excel` is kept and now documents itself as a "Deprecated
+    alias for --launch-addin." The boot guard fires when *either*
+    flag is set (`*launchAddin || *launchExcel`). Renamed
+    `autoLaunchExcel` → `autoLaunchAddin`; the body is unchanged
+    because `launch.DetectAddin` already accepts any Office host (F3).
+    The two `slog.{Warn,Info}` lines that mention the flag now name
+    `--launch-addin` so log readers see the new spelling. `writeUsage`
+    lists both flags with the alias clearly labelled deprecated.
+
+- **Multi-host F8 — extended `StandardRequirementSets` for
+  Word/Outlook/PowerPoint/OneNote.** `addin.contextInfo` only probed
+  Excel and shared-runtime sets, so an agent calling it from a Word
+  taskpane saw a misleading "no Word capabilities" report even when
+  WordApi 1.4 was actually supported. Reasoning: probing 13 extra sets
+  costs roughly nothing per call (`Office.context.requirements.isSetSupported`
+  is sync and local), and an agent looking at one host should see that
+  host's capability ladder.
+  - `internal/addin/requirements.go` — appended 13 entries to
+    `StandardRequirementSets`: WordApi 1.1/1.2/1.3/1.4, Mailbox
+    1.1/1.5/1.8/1.10/1.13, PowerPointApi 1.1/1.2/1.3, OneNoteApi 1.1.
+    Versions chosen to bracket each host's published API ladder so the
+    `supported / unsupported` cutover line tells the agent how modern
+    the runtime is.
+
+### Added
+
+- **Multi-host F7 — OneNote add-in tool surface (6 tools) + bulk
+  registry wiring.** Lands the final host package and flips the full
+  multi-host surface on by wiring `wordtool`, `outlooktool`,
+  `powerpointtool`, and `onenotetool` into
+  `internal/mcp/registry.go` together. Reasoning: keeping the
+  registry wiring as the very last commit means F4/F5/F6/F7 each
+  shipped behind their own `register_test.go` smoke without disturbing
+  the live `tools/list` until everything was ready — and a single
+  commit to flip on 27 new tools is easier to revert than four
+  scattered ones.
+  - `internal/js/onenote_*.js` *(6 new payloads)* —
+    `onenote_read_notebooks.js` (id + name per notebook),
+    `onenote_read_sections.js` (active notebook → sections),
+    `onenote_read_pages.js` (active section → pages),
+    `onenote_read_page.js` (active page → title + content list),
+    `onenote_add_page.js` (append page to active section),
+    `onenote_run_script.js` (escape hatch via `OneNote.run`). All
+    dispatch through `__runOneNote` (F2).
+  - `internal/tools/onenotetool/runner.go` *(new package)* — package
+    forwarder calling `officetool.RunPayload(..., "OneNote")` plus
+    the same `arrayLen` / `stringField` / `emptySelectorParams`
+    helpers as the other host packages.
+  - `internal/tools/onenotetool/notebook.go` — constructors for the
+    five non-script tools (`onenote.readNotebooks`,
+    `onenote.readSections`, `onenote.readPages`, `onenote.readPage`,
+    `onenote.addPage`).
+  - `internal/tools/onenotetool/script.go` — `onenote.runScript`
+    escape hatch wrapped with `__runOneNote`.
+  - `internal/tools/onenotetool/register.go` — `Register(r)`.
+  - `internal/tools/onenotetool/register_test.go` — asserts 6 tools
+    register and every one has an embedded JS payload.
+  - `internal/mcp/registry.go` — added imports for the four new host
+    packages and called their `Register(r)` after `exceltool.Register(r)`.
+    The high-level surface now ships `excel.*` (37) + `word.*` (8) +
+    `outlook.*` (7) + `powerpoint.*` (6) + `onenote.*` (6) by default,
+    with no flag required.
+  - `internal/mcp/registry_test.go` — new
+    `TestDefaultRegistryIncludesMultiHostSurface` asserts at least one
+    tool from each of the five host packages registers on the default
+    (no-CDP) registry shape.
+
+- **Multi-host F6 — PowerPoint add-in tool surface (6 tools).** Adds
+  the PowerPoint host package against the F1 runner. Like F4/F5, the
+  package's `Register()` is exported but not yet wired into the live
+  MCP registry; F7's bulk wiring step turns the full multi-host
+  surface on at once. Reasoning: the slide / shape / selection
+  read-out pattern is enough to build "explain this deck" / "summarize
+  every slide" agent flows, while a single `addSlide` write plus the
+  permissive `runScript` escape hatch covers the long tail of
+  composition use-cases without bloating the surface.
+  - `internal/js/powerpoint_*.js` *(6 new payloads)* —
+    `powerpoint_read_presentation.js` (title + slideCount),
+    `powerpoint_read_slides.js` (id + shape names per slide),
+    `powerpoint_read_slide.js` (per-shape geometry on one slide;
+    out-of-range index throws `powerpoint_slide_out_of_range`),
+    `powerpoint_add_slide.js` (append blank slide, return id),
+    `powerpoint_read_selection.js` (ids of currently selected slides),
+    `powerpoint_run_script.js` (escape hatch via `PowerPoint.run`).
+    All dispatch through `__runPowerPoint` (F2).
+  - `internal/tools/powerpointtool/runner.go` *(new package)* —
+    package forwarder `runPayloadSum` calling
+    `officetool.RunPayload(..., "PowerPoint")`, plus the same
+    `arrayLen` / `stringField` / `emptySelectorParams` helpers as the
+    other host packages and a `numberField` helper used by the
+    presentation-summary line.
+  - `internal/tools/powerpointtool/presentation.go` — constructors
+    for the five non-script tools (`powerpoint.readPresentation`,
+    `powerpoint.readSlides`, `powerpoint.readSlide`,
+    `powerpoint.addSlide`, `powerpoint.readSelection`).
+  - `internal/tools/powerpointtool/script.go` —
+    `powerpoint.runScript` escape hatch, mirroring `excel.runScript`
+    but wrapped with `__runPowerPoint`.
+  - `internal/tools/powerpointtool/register.go` — `Register(r)`
+    exported but not yet called from `internal/mcp/registry.go`.
+  - `internal/tools/powerpointtool/register_test.go` — asserts
+    exactly 6 tools register and every one has an embedded JS payload.
+
+- **Multi-host F5 — Outlook add-in tool surface (7 tools).** Adds the
+  Outlook host package against the F1 runner. Outlook is the odd one
+  out: it has no batched-context `<Host>.run` API, and most of its
+  property accessors are still callback-shaped (`getAsync` /
+  `setAsync`). Reasoning: a thin Promise-wrapper inside each payload
+  keeps the Go-side dispatch contract identical to the other hosts —
+  the runner just awaits whatever the payload returns. Like F4, the
+  package is registered in its own `Register()` but not yet wired into
+  the live MCP registry; F7's bulk wiring step lands the four host
+  packages together.
+  - `internal/js/outlook_*.js` *(7 new payloads)* —
+    `outlook_read_item.js`, `outlook_get_body.js`,
+    `outlook_set_body.js`, `outlook_get_subject.js`,
+    `outlook_set_subject.js`, `outlook_get_recipients.js`,
+    `outlook_run_script.js`. All call `__runOutlook(async mailbox =>
+    { … })` (the F2 helper passes `Office.context.mailbox` straight
+    through). Each callback API is wrapped in `new Promise((resolve,
+    reject) => x.getAsync(…, r => r.status === 'succeeded' ? … : …))`
+    so the body still reads as straight-line `await` code.
+    `outlook_get_subject.js` and `outlook_get_recipients.js` detect
+    compose-vs-read mode at runtime by sniffing whether the field
+    exposes `getAsync` (compose) or is a plain string / array (read).
+  - `internal/tools/outlooktool/runner.go` *(new package)* — package
+    forwarder `runPayloadSum` calling `officetool.RunPayload(...,
+    "Outlook")`, plus the same `arrayLen` / `stringField` /
+    `emptySelectorParams` helpers as `wordtool`.
+  - `internal/tools/outlooktool/mailbox.go` — constructors for the six
+    mailbox tools (`outlook.readItem`, `outlook.getBody`,
+    `outlook.setBody`, `outlook.getSubject`, `outlook.setSubject`,
+    `outlook.getRecipients`).
+  - `internal/tools/outlooktool/script.go` — `outlook.runScript`
+    escape hatch. Differs from `excel.runScript` / `word.runScript` in
+    two ways: the user body sees `mailbox` (not `context`) and there
+    is no `Outlook.run` wrapper on the JS side.
+  - `internal/tools/outlooktool/register.go` — `Register(r)` exported
+    but not yet called from `internal/mcp/registry.go`.
+  - `internal/tools/outlooktool/register_test.go` — asserts exactly 7
+    tools register and every one has an embedded JS payload.
+
+- **Multi-host F4 — Word add-in tool surface (8 tools).** Adds the
+  first non-Excel host package against the new officetool runner. None
+  of the new tools are wired into the registry yet — the `Register`
+  call lands in F7's bulk wiring step so a single commit flips on
+  all four host packages at once. Reasoning: keeping the host packages
+  individually verifiable (each has its own `register_test.go` that
+  panic-checks every schema and asserts every tool has a JS payload)
+  lets us land them serially without disturbing the live MCP surface.
+  - `internal/js/word_*.js` *(8 new payloads)* —
+    `word_read_body.js`, `word_write_body.js`,
+    `word_read_paragraphs.js`, `word_insert_paragraph.js`,
+    `word_read_selection.js`, `word_search_text.js`,
+    `word_read_properties.js`, `word_run_script.js`. All call
+    `__runWord(async ctx => { … })` introduced by F2 and follow the
+    same `// @requires WordApi <ver>` convention used by the Excel
+    payloads (so the existing requirement-set tooling parses them
+    automatically).
+  - `internal/tools/wordtool/runner.go` *(new package)* — package-level
+    `runPayloadSum` that forwards to `officetool.RunPayload(...,
+    "Word")`, plus the small `arrayLen` / `stringField` /
+    `emptySelectorParams` helpers mirrored from `exceltool`. The
+    selector-base const re-exports `officetool.TargetSelectorBase` so
+    schemas in this package keep the same string-concat shape as in
+    `exceltool`.
+  - `internal/tools/wordtool/document.go` — constructors for the seven
+    document-scoped tools (`word.readBody`, `word.writeBody`,
+    `word.readParagraphs`, `word.insertParagraph`,
+    `word.readSelection`, `word.searchText`, `word.readProperties`).
+    Tools that take only the selector embed `emptySelectorParams`;
+    tools with extra fields embed `officetool.SelectorFields` directly.
+  - `internal/tools/wordtool/script.go` — `word.runScript` escape
+    hatch, mirroring `excel.runScript` (compiles the user's body via
+    `new Function(...)` and runs it inside `__runWord`).
+  - `internal/tools/wordtool/register.go` — `Register(r)` exported but
+    not yet called from `internal/mcp/registry.go`; F7 will flip the
+    full multi-host surface on at once.
+  - `internal/tools/wordtool/register_test.go` — mirrors the Excel
+    register test: asserts exactly 8 tools register and every
+    registered tool has an embedded JS payload.
+
+### Changed
+
+- **Multi-host F3 — generalized add-in manifest detection.**
+  `launch.DetectAddin` only accepted manifests that declared the Excel
+  Workbook host (XML manifests with `<Host Name="Workbook"/>` or JSON
+  manifests with a `workbook` scope), so a Word / Outlook / PowerPoint /
+  OneNote project would fail detection even though everything downstream
+  is host-agnostic. Reasoning: the host-specific gate served no purpose
+  beyond Phase-0 scoping — the launcher, CDP wiring, and Office.js
+  payload runner all care about presence of an add-in, not which host
+  it targets — so widening the gate is the cheapest path to multi-host
+  support.
+  - `internal/launch/detect.go` — renamed `isWorkbookXMLManifest` →
+    `isOfficeXMLManifest` and dropped the `<Host Name="Workbook">`
+    regex check; presence of `<OfficeApp` is now sufficient. Renamed
+    `isWorkbookJSONManifest` → `isOfficeJSONManifest` and accepted any
+    non-empty `extensions[].requirements.scopes` (was hard-coded to
+    `"workbook"`). Updated `ErrNoProject` message and the `Project`
+    struct's doc comment to drop "Excel".
+  - `internal/launch/detect_test.go` — flipped
+    `TestDetectAddin_NonWorkbookXMLRejected` to
+    `TestDetectAddin_NonWorkbookXMLAccepted`: a manifest with
+    `<Host Name="Document"/>` (Word) is now a valid project. All other
+    fixture-based tests pass unchanged because their `<Host
+    Name="Workbook">` markup still satisfies the relaxed `<OfficeApp`
+    check.
+  - `internal/tools/lifecycletool/detect.go` — package doc and
+    `addin.detect` tool description no longer say "Excel" or
+    "workbook-scoped"; the description now lists the supported hosts
+    (Workbook, Document, Mailbox, Presentation, Notebook) explicitly so
+    agents can tell at a glance the tool isn't Excel-only.
+
+- **Multi-host F2 — generalized Office.js preamble for all hosts.**
+  `internal/js/_preamble.js` only exposed `__runExcel` and the
+  `__ensureOffice` gate hard-failed when `globalThis.Excel` was
+  unavailable — fine for Excel-only payloads, but a non-starter for
+  the upcoming Word / Outlook / PowerPoint / OneNote tools that need
+  to run in taskpanes hosted by other Office apps. Reasoning: every
+  host shares the same `Office.onReady` bootstrap; only the per-host
+  `<Host>.run` wrapper differs, so it's cheaper to add four sibling
+  helpers than to duplicate the readiness dance per host.
+  - `internal/js/_preamble.js` — removed the `globalThis.Excel`
+    presence check from `__ensureOffice`; the `office_unavailable`
+    error now covers every host. Added `__runWord(fn)`,
+    `__runPowerPoint(fn)`, `__runOneNote(fn)`, and `__runOutlook(fn)`
+    alongside `__runExcel`. The first three follow the existing
+    `Excel.run` pattern; `__runOutlook` is the odd one — it skips
+    `<Host>.run` (Outlook has no equivalent batched-context API) and
+    just hands `Office.context.mailbox` to the payload after readiness.
+  - `internal/tools/addintool/errors.go` — `recoveryHintForOfficeCode`
+    no longer matches `excel_unavailable` (the preamble can no longer
+    throw it); the `office_unavailable` hint is now phrased
+    host-agnostically ("Office.js is not loaded in this target").
+  - `internal/officejs/payloads_test.go` — `TestPreambleEmbedded`
+    asserts the four new run helpers are concatenated into the
+    embedded preamble alongside the existing markers.
+
+- **Multi-host F1 — extracted shared payload runner into `internal/tools/officetool`.**
+  The `runPayload` scaffolding (Attach → Office.js dispatch → envelope mapping)
+  used to live entirely inside `internal/tools/exceltool/runner.go`, which
+  meant adding Word/Outlook/PowerPoint/OneNote support would require copying
+  the same ~50 lines four times. Reasoning: the runner is genuinely
+  host-agnostic — only the host label embedded in failure summaries varies —
+  so extracting it once unblocks every subsequent host package without
+  forking the dispatch loop.
+  - `internal/tools/officetool/runner.go` *(new)* — exports
+    `TargetSelectorBase` (JSON-Schema fragment), `SelectorFields` (embedded
+    params struct) with a `Selector()` method, and `RunPayload(ctx, env, sel,
+    payload, args, summaryFn, hostLabel)`. The `hostLabel` parameter
+    ("Excel" / "Word" / …) is interpolated into attach/payload-failure
+    summaries so chat clients see which host's call broke.
+  - `internal/tools/exceltool/runner.go` — `runPayloadSum` is now a
+    one-line forwarder to `officetool.RunPayload(..., "Excel")`. Removed the
+    now-redundant local `codeOrDefault` helper. Kept the unexported
+    `selectorFields` / `targetSelectorBase` so existing per-tool call sites
+    in this package compile unchanged.
+
 - **Headless-Chrome integration test gated behind `-tags integration`.**
   `internal/cdp/integration_test.go` previously ran in non-`-short` mode
   and was the source of intermittent CI failures on Windows runners

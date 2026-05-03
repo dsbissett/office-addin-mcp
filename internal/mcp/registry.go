@@ -8,7 +8,11 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/tools/inspecttool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/interacttool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/lifecycletool"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/onenotetool"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/outlooktool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/pagetool"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/powerpointtool"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/wordtool"
 )
 
 // CDPSelection chooses which slice of the raw cdp.* surface gets registered.
@@ -34,6 +38,10 @@ func DefaultRegistry(sel CDPSelection) *tools.Registry {
 	inspecttool.Register(r)
 	interacttool.Register(r)
 	exceltool.Register(r)
+	wordtool.Register(r)
+	outlooktool.Register(r)
+	powerpointtool.Register(r)
+	onenotetool.Register(r)
 	if sel.Enabled {
 		if len(sel.Domains) == 0 {
 			cdptool.Register(r)
