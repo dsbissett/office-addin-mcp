@@ -21,6 +21,23 @@ var StandardRequirementSets = []RequirementSet{
 	{Name: "DialogApi", MinVersion: "1.2"},
 	{Name: "RibbonApi", MinVersion: "1.1"},
 	{Name: "IdentityAPI", MinVersion: "1.3"},
+	// Word
+	{Name: "WordApi", MinVersion: "1.1"},
+	{Name: "WordApi", MinVersion: "1.2"},
+	{Name: "WordApi", MinVersion: "1.3"},
+	{Name: "WordApi", MinVersion: "1.4"},
+	// Outlook
+	{Name: "Mailbox", MinVersion: "1.1"},
+	{Name: "Mailbox", MinVersion: "1.5"},
+	{Name: "Mailbox", MinVersion: "1.8"},
+	{Name: "Mailbox", MinVersion: "1.10"},
+	{Name: "Mailbox", MinVersion: "1.13"},
+	// PowerPoint
+	{Name: "PowerPointApi", MinVersion: "1.1"},
+	{Name: "PowerPointApi", MinVersion: "1.2"},
+	{Name: "PowerPointApi", MinVersion: "1.3"},
+	// OneNote
+	{Name: "OneNoteApi", MinVersion: "1.1"},
 }
 
 // MergeRequirementSets returns a deduplicated union of base and extras keyed

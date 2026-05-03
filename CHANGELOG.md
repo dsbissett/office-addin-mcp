@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+### Changed
+
+- **Multi-host F8 — extended `StandardRequirementSets` for
+  Word/Outlook/PowerPoint/OneNote.** `addin.contextInfo` only probed
+  Excel and shared-runtime sets, so an agent calling it from a Word
+  taskpane saw a misleading "no Word capabilities" report even when
+  WordApi 1.4 was actually supported. Reasoning: probing 13 extra sets
+  costs roughly nothing per call (`Office.context.requirements.isSetSupported`
+  is sync and local), and an agent looking at one host should see that
+  host's capability ladder.
+  - `internal/addin/requirements.go` — appended 13 entries to
+    `StandardRequirementSets`: WordApi 1.1/1.2/1.3/1.4, Mailbox
+    1.1/1.5/1.8/1.10/1.13, PowerPointApi 1.1/1.2/1.3, OneNoteApi 1.1.
+    Versions chosen to bracket each host's published API ladder so the
+    `supported / unsupported` cutover line tells the agent how modern
+    the runtime is.
+
 ### Added
 
 - **Multi-host F7 — OneNote add-in tool surface (6 tools) + bulk
