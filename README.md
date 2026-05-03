@@ -1,16 +1,16 @@
 # office-addin-mcp
 
-MCP server for driving Office add-ins and Excel via WebView2 and the Chrome DevTools Protocol.
+MCP server for driving Office add-ins (Excel, Word, Outlook, PowerPoint, OneNote) via WebView2 and the Chrome DevTools Protocol.
 
-`office-addin-mcp` is a Go binary that exposes a high-level tool surface for Excel and browser add-ins running inside WebView2. It speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio.
+`office-addin-mcp` is a Go binary that exposes a high-level tool surface for Office add-ins running inside WebView2. It speaks the [Model Context Protocol](https://modelcontextprotocol.io) over stdio.
 
 See the [latest release](https://github.com/dsbissett/office-addin-mcp/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
 
 ## Features
 
-- **37 Excel tools** — read/write ranges, worksheets, tables, charts, pivot tables, and arbitrary `Excel.run` scripts via embedded Office.js payloads
+- **64 Office host tools across 5 apps** — Excel (37), Word (8), Outlook (7), PowerPoint (6), OneNote (6). Read/write document content, ranges, tables, charts, pivot tables, slides, mail items, notebook pages, and arbitrary `<Host>.run` scripts via embedded Office.js payloads
 - **Page interaction** — screenshot, snapshot, click, fill, type, hover, navigate, evaluate, console log, network log, and more
-- **Add-in lifecycle** — detect, launch, and stop add-ins; open task-pane dialogs
+- **Add-in lifecycle** — detect, launch, and stop add-ins for any Office host; open task-pane dialogs
 - **~411 raw CDP methods** — code-generated from Chrome's protocol JSON, hidden by default (`--expose-raw-cdp` to enable)
 - **MCP-native stdio transport** — plug into Claude Code, Cursor, VS Code GitHub Copilot, Codex, Windsurf, or any MCP-compatible client
 
@@ -18,7 +18,7 @@ See the [latest release](https://github.com/dsbissett/office-addin-mcp/releases/
 
 | Requirement | Notes |
 |---|---|
-| **Excel + Windows 10/11** | Required for `excel.*` and `addin.*` tools |
+| **Office on Windows 10/11** | Required for `excel.*` / `word.*` / `outlook.*` / `powerpoint.*` / `onenote.*` / `addin.*` tools (Office uses WebView2 only on Windows) |
 | **Node.js 14+** | For `npx` install |
 | **Go 1.22+** | Build from source only |
 | macOS / Linux | Supported for `page.*` / `cdp.*` tools against headless Chrome |
@@ -45,15 +45,19 @@ Pre-built binaries for Windows x64, macOS (Intel + Apple Silicon), and Linux (x6
 go install github.com/dsbissett/office-addin-mcp/cmd/office-addin-mcp@latest
 ```
 
-## Excel Setup
+## Office Host Setup
 
-Launch Excel with the WebView2 remote debugging port open **once per Excel session**:
+Launch the Office host (Excel, Word, Outlook, PowerPoint, or OneNote) with the WebView2 remote debugging port open **once per host session**. The env var is shared by every Office WebView2 instance, so the same setup works for all five apps:
 
 **PowerShell:**
 
 ```powershell
 $env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = "--remote-debugging-port=9222"
 Start-Process excel.exe my-workbook.xlsx
+# or:    Start-Process winword.exe my-document.docx
+# or:    Start-Process outlook.exe
+# or:    Start-Process powerpnt.exe my-deck.pptx
+# or:    Start-Process onenote.exe
 ```
 
 **Command Prompt:**
@@ -63,7 +67,7 @@ set WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222
 excel.exe my-workbook.xlsx
 ```
 
-The server connects to `http://127.0.0.1:9222` by default. Pass `--browser-url` to change the address.
+The server connects to `http://127.0.0.1:9222` by default. Pass `--browser-url` to change the address. Or pass `--launch-addin` and the server will detect the project under your cwd and sideload it via `office-addin-debugging` automatically — no manual env var needed.
 
 ## MCP Client Configuration
 
@@ -163,6 +167,10 @@ The `urlPattern` parameter accepted by most tools selects the WebView2 page by s
 | Prefix | Count | Description |
 |---|---|---|
 | `excel.*` | 37 | Read/write ranges, worksheets, tables, charts, pivot tables, custom XML, `Excel.run` scripts |
+| `word.*` | 8 | Read/write document body, paragraphs, selection, search, properties, `Word.run` scripts |
+| `outlook.*` | 7 | Read item, get/set body, get/set subject, get recipients, custom mailbox scripts |
+| `powerpoint.*` | 6 | Read presentation/slides, read shapes on a slide, add slide, read selection, `PowerPoint.run` scripts |
+| `onenote.*` | 6 | List notebooks/sections/pages, read active page, add page, `OneNote.run` scripts |
 | `page.*` | ~15 | Screenshot, snapshot, click, fill, type, hover, navigate, evaluate, wait, console log, network log |
 | `pages.*` | 4 | List, select, close, dialog |
 | `addin.*` | 6 | Detect, launch, stop, context info, CF runtime info, dialog |
@@ -175,6 +183,11 @@ The `urlPattern` parameter accepted by most tools selects the WebView2 page by s
 | `--browser-url` | — | `http://127.0.0.1:9222` | WebView2 / Chrome debug endpoint |
 | `--ws-endpoint` | — | — | Direct browser WebSocket URL (overrides `--browser-url`) |
 | `--log-file` | — | stderr | Append diagnostics to a file instead of stderr |
+| `--log-level` | — | `info` | slog level: `debug`, `info`, `warn`, `error` |
+| `--launch-addin` | — | off | Auto-detect and launch the Office add-in under cwd at startup if no CDP endpoint is reachable. Works for any host (Excel, Word, Outlook, PowerPoint, OneNote) |
+| `--launch-excel` | — | off | Deprecated alias for `--launch-addin` |
+| `--cdp-domains` | — | — | Comma-separated CDP domains to expose (e.g. `DOM,Page,Runtime`); implies `--expose-raw-cdp` |
+| `--list-cdp-domains` | — | — | Print the available CDP domain names and exit |
 | `--expose-raw-cdp` | `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP` | off | Register ~411 raw `cdp.*` methods |
 | `--allow-dangerous-cdp` | `OAMCP_ALLOW_DANGEROUS_CDP` | off | Enable crash/terminate CDP methods |
 | `--version` | — | — | Print binary version and exit |
