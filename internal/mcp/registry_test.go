@@ -41,6 +41,34 @@ func TestExposeRawCDPRegistersGenerated(t *testing.T) {
 	}
 }
 
+// TestDefaultRegistryIncludesMultiHostSurface confirms that the host
+// packages added by the multi-host plan (Word, Outlook, PowerPoint,
+// OneNote) are registered alongside the existing Excel surface on the
+// default high-level registry — no flag required.
+func TestDefaultRegistryIncludesMultiHostSurface(t *testing.T) {
+	r := DefaultRegistry(CDPSelection{})
+	counts := map[string]int{}
+	for _, tl := range r.List() {
+		switch {
+		case strings.HasPrefix(tl.Name, "excel."):
+			counts["excel"]++
+		case strings.HasPrefix(tl.Name, "word."):
+			counts["word"]++
+		case strings.HasPrefix(tl.Name, "outlook."):
+			counts["outlook"]++
+		case strings.HasPrefix(tl.Name, "powerpoint."):
+			counts["powerpoint"]++
+		case strings.HasPrefix(tl.Name, "onenote."):
+			counts["onenote"]++
+		}
+	}
+	for _, host := range []string{"excel", "word", "outlook", "powerpoint", "onenote"} {
+		if counts[host] == 0 {
+			t.Errorf("expected at least one %s.* tool registered by default; got 0", host)
+		}
+	}
+}
+
 // TestCDPDomainsFilterRegistersOnlyNamedDomains confirms F7 behavior: a
 // non-empty Domains list registers only those domains' cdp.* tools (plus
 // cdp.selectTarget) and skips everything else.

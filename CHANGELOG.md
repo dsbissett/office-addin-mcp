@@ -4,6 +4,47 @@
 
 ### Added
 
+- **Multi-host F7 — OneNote add-in tool surface (6 tools) + bulk
+  registry wiring.** Lands the final host package and flips the full
+  multi-host surface on by wiring `wordtool`, `outlooktool`,
+  `powerpointtool`, and `onenotetool` into
+  `internal/mcp/registry.go` together. Reasoning: keeping the
+  registry wiring as the very last commit means F4/F5/F6/F7 each
+  shipped behind their own `register_test.go` smoke without disturbing
+  the live `tools/list` until everything was ready — and a single
+  commit to flip on 27 new tools is easier to revert than four
+  scattered ones.
+  - `internal/js/onenote_*.js` *(6 new payloads)* —
+    `onenote_read_notebooks.js` (id + name per notebook),
+    `onenote_read_sections.js` (active notebook → sections),
+    `onenote_read_pages.js` (active section → pages),
+    `onenote_read_page.js` (active page → title + content list),
+    `onenote_add_page.js` (append page to active section),
+    `onenote_run_script.js` (escape hatch via `OneNote.run`). All
+    dispatch through `__runOneNote` (F2).
+  - `internal/tools/onenotetool/runner.go` *(new package)* — package
+    forwarder calling `officetool.RunPayload(..., "OneNote")` plus
+    the same `arrayLen` / `stringField` / `emptySelectorParams`
+    helpers as the other host packages.
+  - `internal/tools/onenotetool/notebook.go` — constructors for the
+    five non-script tools (`onenote.readNotebooks`,
+    `onenote.readSections`, `onenote.readPages`, `onenote.readPage`,
+    `onenote.addPage`).
+  - `internal/tools/onenotetool/script.go` — `onenote.runScript`
+    escape hatch wrapped with `__runOneNote`.
+  - `internal/tools/onenotetool/register.go` — `Register(r)`.
+  - `internal/tools/onenotetool/register_test.go` — asserts 6 tools
+    register and every one has an embedded JS payload.
+  - `internal/mcp/registry.go` — added imports for the four new host
+    packages and called their `Register(r)` after `exceltool.Register(r)`.
+    The high-level surface now ships `excel.*` (37) + `word.*` (8) +
+    `outlook.*` (7) + `powerpoint.*` (6) + `onenote.*` (6) by default,
+    with no flag required.
+  - `internal/mcp/registry_test.go` — new
+    `TestDefaultRegistryIncludesMultiHostSurface` asserts at least one
+    tool from each of the five host packages registers on the default
+    (no-CDP) registry shape.
+
 - **Multi-host F6 — PowerPoint add-in tool surface (6 tools).** Adds
   the PowerPoint host package against the F1 runner. Like F4/F5, the
   package's `Register()` is exported but not yet wired into the live
