@@ -4,6 +4,26 @@
 
 ### Changed
 
+- **Multi-host F1 — extracted shared payload runner into `internal/tools/officetool`.**
+  The `runPayload` scaffolding (Attach → Office.js dispatch → envelope mapping)
+  used to live entirely inside `internal/tools/exceltool/runner.go`, which
+  meant adding Word/Outlook/PowerPoint/OneNote support would require copying
+  the same ~50 lines four times. Reasoning: the runner is genuinely
+  host-agnostic — only the host label embedded in failure summaries varies —
+  so extracting it once unblocks every subsequent host package without
+  forking the dispatch loop.
+  - `internal/tools/officetool/runner.go` *(new)* — exports
+    `TargetSelectorBase` (JSON-Schema fragment), `SelectorFields` (embedded
+    params struct) with a `Selector()` method, and `RunPayload(ctx, env, sel,
+    payload, args, summaryFn, hostLabel)`. The `hostLabel` parameter
+    ("Excel" / "Word" / …) is interpolated into attach/payload-failure
+    summaries so chat clients see which host's call broke.
+  - `internal/tools/exceltool/runner.go` — `runPayloadSum` is now a
+    one-line forwarder to `officetool.RunPayload(..., "Excel")`. Removed the
+    now-redundant local `codeOrDefault` helper. Kept the unexported
+    `selectorFields` / `targetSelectorBase` so existing per-tool call sites
+    in this package compile unchanged.
+
 - **Headless-Chrome integration test gated behind `-tags integration`.**
   `internal/cdp/integration_test.go` previously ran in non-`-short` mode
   and was the source of intermittent CI failures on Windows runners
