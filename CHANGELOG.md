@@ -4,6 +4,45 @@
 
 ### Added
 
+- **Multi-host F5 — Outlook add-in tool surface (7 tools).** Adds the
+  Outlook host package against the F1 runner. Outlook is the odd one
+  out: it has no batched-context `<Host>.run` API, and most of its
+  property accessors are still callback-shaped (`getAsync` /
+  `setAsync`). Reasoning: a thin Promise-wrapper inside each payload
+  keeps the Go-side dispatch contract identical to the other hosts —
+  the runner just awaits whatever the payload returns. Like F4, the
+  package is registered in its own `Register()` but not yet wired into
+  the live MCP registry; F7's bulk wiring step lands the four host
+  packages together.
+  - `internal/js/outlook_*.js` *(7 new payloads)* —
+    `outlook_read_item.js`, `outlook_get_body.js`,
+    `outlook_set_body.js`, `outlook_get_subject.js`,
+    `outlook_set_subject.js`, `outlook_get_recipients.js`,
+    `outlook_run_script.js`. All call `__runOutlook(async mailbox =>
+    { … })` (the F2 helper passes `Office.context.mailbox` straight
+    through). Each callback API is wrapped in `new Promise((resolve,
+    reject) => x.getAsync(…, r => r.status === 'succeeded' ? … : …))`
+    so the body still reads as straight-line `await` code.
+    `outlook_get_subject.js` and `outlook_get_recipients.js` detect
+    compose-vs-read mode at runtime by sniffing whether the field
+    exposes `getAsync` (compose) or is a plain string / array (read).
+  - `internal/tools/outlooktool/runner.go` *(new package)* — package
+    forwarder `runPayloadSum` calling `officetool.RunPayload(...,
+    "Outlook")`, plus the same `arrayLen` / `stringField` /
+    `emptySelectorParams` helpers as `wordtool`.
+  - `internal/tools/outlooktool/mailbox.go` — constructors for the six
+    mailbox tools (`outlook.readItem`, `outlook.getBody`,
+    `outlook.setBody`, `outlook.getSubject`, `outlook.setSubject`,
+    `outlook.getRecipients`).
+  - `internal/tools/outlooktool/script.go` — `outlook.runScript`
+    escape hatch. Differs from `excel.runScript` / `word.runScript` in
+    two ways: the user body sees `mailbox` (not `context`) and there
+    is no `Outlook.run` wrapper on the JS side.
+  - `internal/tools/outlooktool/register.go` — `Register(r)` exported
+    but not yet called from `internal/mcp/registry.go`.
+  - `internal/tools/outlooktool/register_test.go` — asserts exactly 7
+    tools register and every one has an embedded JS payload.
+
 - **Multi-host F4 — Word add-in tool surface (8 tools).** Adds the
   first non-Excel host package against the new officetool runner. None
   of the new tools are wired into the registry yet — the `Register`
