@@ -4,6 +4,40 @@
 
 ### Added
 
+- **Phase C of `PLAN-workflow-surface.md` — auto-diagnostics enrichment.**
+  Adds a dispatcher-level Office.js error classifier that mutates failure
+  envelopes in place with structured recovery hints, so an AI client can
+  self-correct in one round-trip instead of three. Bounded to one extra CDP
+  call per error (a single Office.js payload against the already-attached
+  target), and prefers the doccache as its source when an entry is present.
+  - `classifyOfficeJSErr` in `internal/tools/diagnostics.go` runs after every
+    `tool.Run` whose result has `Category == office_js`. Switches on
+    `host(toolName)` + `errEnv.Code`:
+    - **Excel `ItemNotFound`** — populates `Details["available_sheets"]` (from
+      doccache or a one-shot `excel.listWorksheets` call),
+      `Details["nearest_name_suggestions"]` (Levenshtein on the sheet portion
+      of `address`), `Details["failing_address"]`, and a `RecoveryHint` that
+      points at those keys.
+    - **Excel `InvalidArgument`** — parses the address into
+      `Details["parsed_address"] = {start_column, start_row, end_column?,
+      end_row?}` and flags `Details["column_out_of_bounds"]` / `row_out_of_bounds`
+      against Excel's XFD / 1,048,576 maxima.
+    - **PowerPoint `ItemNotFound` / `InvalidArgument`** — populates
+      `Details["slide_count"]` (from doccache or a one-shot
+      `powerpoint.discover` call) so the agent can retry with a valid 1-based
+      slide index.
+    - **Outlook compose-vs-read mismatch** — when the message hints at a mode
+      mismatch (`"compose"`, `"read mode"`, `"item mode"`, code
+      `InvalidOperation` / `ItemNotFound`), populates `Details["item_mode"]`
+      from doccache or a one-shot `outlook.discover` so the agent knows which
+      mode the active item is in.
+  - `doccache.Store.List(host)` returns every cached entry for a host,
+    most-recently-updated first. Used as the preferred enrichment source so
+    the dispatcher avoids an extra CDP call when a recent discovery is already
+    on disk.
+  - Source attribution: `Details["available_sheets_source"]` is `"doccache"`
+    or `"live"` so callers can reason about staleness.
+
 - **Phase B of `PLAN-workflow-surface.md` — server-side query engine +
   persistent document context cache.** Adds two complementary primitives on top
   of Phase A: a JSON-shaped query DSL that runs filter / project / groupBy /

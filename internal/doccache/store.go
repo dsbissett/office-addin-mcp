@@ -134,6 +134,35 @@ func (s *Store) Put(e Entry) error {
 	return s.saveLocked()
 }
 
+// List returns every cached entry for a host, most-recently-updated first.
+// Returns nil for disabled stores or unknown hosts. Used by the dispatcher's
+// Office.js error enricher (Phase C) when the failing call did not carry an
+// explicit filePath — it picks the freshest entry as a best-effort lookup.
+func (s *Store) List(host string) []Entry {
+	if s == nil || s.disabled {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.loadLocked(); err != nil {
+		return nil
+	}
+	var out []Entry
+	for _, e := range s.entries {
+		if e.Host == host {
+			out = append(out, e)
+		}
+	}
+	for i := 0; i < len(out); i++ {
+		for j := i + 1; j < len(out); j++ {
+			if out[j].UpdatedAt.After(out[i].UpdatedAt) {
+				out[i], out[j] = out[j], out[i]
+			}
+		}
+	}
+	return out
+}
+
 // Invalidate drops the cached entry for (host, filePath). No error if absent.
 func (s *Store) Invalidate(host, filePath string) error {
 	if s == nil || s.disabled {

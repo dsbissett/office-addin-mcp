@@ -118,6 +118,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 			DocCache:       d.DocCache,
 		}
 		res := tool.Run(ctx, rawParams, env)
+		if res.Err != nil && res.Err.Category == CategoryOfficeJS {
+			classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
+		}
 		return finalize(diag, start, 0, res)
 	}
 
@@ -149,6 +152,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	env.SetManifest = d.SetManifest
 	env.DocCache = d.DocCache
 	res := tool.Run(ctx, rawParams, env)
+	if res.Err != nil && res.Err.Category == CategoryOfficeJS {
+		classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
+	}
 
 	return finalize(diag, start, conn.RoundTrips()-rtStart, res)
 }
