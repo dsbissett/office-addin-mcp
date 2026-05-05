@@ -2,6 +2,88 @@
 
 ## Unreleased
 
+### Added
+
+- **Phase A of `PLAN-workflow-surface.md` — workflow tools + cross-host
+  orchestration.** Reintroduces a small, agent-shaped Office surface on top of
+  the Phase 0 narrowing. Each new tool collapses what used to be 5–20 primitive
+  calls into one MCP dispatch + one Office.js batch (one CDP round-trip).
+  Live Office verification is manual; CI does not exercise a real workbook.
+  - `internal/js/excel_tabulate_region.js` + `internal/tools/exceltool/tabulate_region.go`
+    — `excel.tabulateRegion`. Reads a range and returns rows-as-objects keyed
+    by inferred or supplied headers, plus per-column type tags
+    (number / string / boolean / date / mixed). `headers: auto|first_row|none`,
+    `maxCells` cap (default 100k) bails with `truncated=true` instead of
+    streaming the whole grid.
+  - `internal/js/excel_apply_diff.js` + `internal/tools/exceltool/apply_diff.go`
+    — `excel.applyDiff`. Batches `{address, value|values, formula|formulas,
+    numberFormat}` patches into one `Excel.run` with one or two `context.sync`
+    calls (a second pass is needed only when a scalar `numberFormat` is
+    supplied — must broadcast across the loaded range shape). Replaces N
+    sequential `excel.writeRange` round-trips.
+  - `internal/js/excel_summarize_workbook.js` + `internal/tools/exceltool/summarize_workbook.go`
+    — `excel.summarizeWorkbook`. One-call workbook discovery: sheet list with
+    used-range bounds per sheet, table catalog (name/sheet/header+totals
+    flags), named ranges (name/type/value/scope/comment). Replaces the
+    primitive `listWorksheets + listTables + listNamedItems + per-sheet
+    usedRange` probe.
+  - `internal/js/word_apply_edits.js` + `internal/tools/wordtool/apply_edits.go`
+    — `word.applyEdits`. Batches `{find, replace, matchCase?, matchWholeWord?}`
+    edits in one `Word.run`. Each edit's `body.search` results are loaded in
+    the first sync, replacements applied + flushed in the second. Returns a
+    per-edit `{find, replace, replaced}` count.
+  - `internal/js/outlook_draft_reply.js` + `internal/tools/outlooktool/draft_reply.go`
+    — `outlook.draftReply`. Sets `subject` and/or `body` on the active
+    compose-mode mailbox item in one tool call. Refuses with
+    `outlook_compose_required` when `body.setAsync` is unavailable (read-mode
+    item). `coercionType` defaults to `html`.
+  - `internal/js/powerpoint_rebuild_slide_from_outline.js` +
+    `internal/tools/powerpointtool/rebuild_slide_from_outline.go` —
+    `powerpoint.rebuildSlideFromOutline`. Rewrites the title and/or body
+    bullets of an existing slide in one `PowerPoint.run`. Identifies title vs
+    body shape by placeholder name conventions
+    (`title*` / `subtitle*` → title; `content*` / `body*` / `placeholder*`
+    → body), falling back to the first / second shape when no naming match
+    exists. Out-of-range slide index throws
+    `powerpoint_slide_out_of_range`.
+  - `internal/js/onenote_append_to_page.js` + `internal/tools/onenotetool/append_to_page.go`
+    — `onenote.appendToPage`. Appends `html` and/or a `bullets[]` outline to a
+    OneNote page (active by default; explicit `pageId` honored when
+    `getPageById` is available) in one call. Bullets are HTML-escaped + wrapped
+    in `<ul><li>` before being added as an outline.
+  - `internal/js/powerpoint_insert_text_table.js` *(new internal payload)* —
+    inserts a slide-level text-box shape with tab-separated rows; not exposed
+    as a top-level MCP tool, but used by `office.embed` as the PowerPoint
+    side. PowerPoint's Office.js surface lacks a true `addTable` as of API
+    1.5, so a `slide.shapes.addTextBox` with `\t`/`\n` formatting is the most
+    reliable shape-based fallback.
+  - `internal/tools/officetool/embed.go` + `internal/tools/officetool/register.go`
+    + `internal/tools/officetool/register_test.go` — `office.embed` cross-host
+    tool. Two sequential `env.Attach` + `executor.Run` calls in Go: read an
+    Excel range via `excel.readRange`, then insert the values onto a
+    PowerPoint slide via `powerpoint.insertTextTable`. Source/target
+    selectors are independent. Documents the limitation that both targets
+    must be reachable from the same CDP debug endpoint (cross-endpoint
+    embedding is out of scope for Phase A).
+  - `internal/tools/{exceltool,wordtool,outlooktool,powerpointtool,onenotetool}/register.go`
+    — `Register` extended to register the new workflow tool(s) alongside the
+    existing `RunScript()`.
+  - `internal/tools/*/register_test.go` — count assertions bumped to match
+    the new registrations (excel: 4, word: 2, outlook: 2, powerpoint: 2,
+    onenote: 2). The `TestEveryRunPayloadToolHasJSPayload` guard catches any
+    new Go tool whose JS payload is missing.
+  - `internal/mcp/registry.go` — `DefaultRegistry` now also calls
+    `officetool.Register(r)` so the cross-host surface ships by default.
+  - `internal/mcp/registry_test.go` — new
+    `TestDefaultRegistryIncludesCrossHostSurface` asserts at least one
+    `office.*` tool registers on the default shape.
+  - `README.md` — Features bullets reframed: per-host runScript + Phase A
+    workflow tools + cross-host orchestration. Tool Groups table rewritten to
+    enumerate every Phase A tool individually rather than counting prefixes.
+  - `CLAUDE.md` — Project section updated to list the Phase A workflow tools
+    and `office.embed` and to point at PLAN-workflow-surface.md for the
+    later-phase roadmap (B–E).
+
 ### Removed
 
 - **Phase 0 of `PLAN-workflow-surface.md` — surface narrowing.**

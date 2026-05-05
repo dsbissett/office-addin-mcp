@@ -11,8 +11,8 @@ import (
 func TestRegisterCompilesSchemas(t *testing.T) {
 	r := tools.NewRegistry()
 	Register(r)
-	if got := len(r.List()); got != 1 {
-		t.Fatalf("expected 1 outlook.* tool registered (runScript only), got %d", got)
+	if got := len(r.List()); got != 2 {
+		t.Fatalf("expected 2 outlook.* tools registered (runScript + draftReply), got %d", got)
 	}
 }
 

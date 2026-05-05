@@ -14,8 +14,8 @@ import (
 func TestRegisterCompilesSchemas(t *testing.T) {
 	r := tools.NewRegistry()
 	Register(r)
-	if got := len(r.List()); got != 1 {
-		t.Fatalf("expected 1 excel.* tool registered (runScript only), got %d", got)
+	if got := len(r.List()); got != 4 {
+		t.Fatalf("expected 4 excel.* tools registered (runScript + Phase A workflow tools), got %d", got)
 	}
 }
 

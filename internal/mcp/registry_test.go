@@ -48,3 +48,18 @@ func TestDefaultRegistryIncludesMultiHostSurface(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultRegistryIncludesCrossHostSurface confirms Phase A's cross-host
+// office.* workflow tools register by default.
+func TestDefaultRegistryIncludesCrossHostSurface(t *testing.T) {
+	r := DefaultRegistry()
+	count := 0
+	for _, tl := range r.List() {
+		if strings.HasPrefix(tl.Name, "office.") {
+			count++
+		}
+	}
+	if count == 0 {
+		t.Errorf("expected at least one office.* cross-host tool registered by default; got 0")
+	}
+}

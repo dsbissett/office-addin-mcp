@@ -7,6 +7,7 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/tools/inspecttool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/interacttool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/lifecycletool"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/officetool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/onenotetool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/outlooktool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/pagetool"
@@ -16,8 +17,9 @@ import (
 
 // DefaultRegistry returns the registry exposed to MCP clients on
 // initialize / tools/list. The high-level Office add-in surface
-// (addin.*, pages.*, page.*, inspect.*, interact.*) plus each host's
-// runScript escape hatch is always on.
+// (addin.*, pages.*, page.*, inspect.*, interact.*), each host's
+// runScript escape hatch, plus Phase A workflow + cross-host (office.*)
+// tools are always on.
 func DefaultRegistry() *tools.Registry {
 	r := tools.NewRegistry()
 	lifecycletool.Register(r)
@@ -30,5 +32,6 @@ func DefaultRegistry() *tools.Registry {
 	outlooktool.Register(r)
 	powerpointtool.Register(r)
 	onenotetool.Register(r)
+	officetool.Register(r)
 	return r
 }

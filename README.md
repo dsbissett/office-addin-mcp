@@ -6,7 +6,9 @@ MCP server for driving Office add-ins (Excel, Word, Outlook, PowerPoint, OneNote
 
 See the [latest release](https://github.com/dsbissett/office-addin-mcp/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
 
-- **Per-host `runScript` escape hatch across 5 apps** — `excel.runScript`, `word.runScript`, `outlook.runScript`, `powerpoint.runScript`, `onenote.runScript`. Run arbitrary `<Host>.run` Office.js code against the active document. Workflow-shaped tools (read/write ranges, slide rebuilds, inbox triage, cross-host embed) are landing in Phase A of [PLAN-workflow-surface.md](PLAN-workflow-surface.md).
+- **Per-host `runScript` escape hatch across 5 apps** — `excel.runScript`, `word.runScript`, `outlook.runScript`, `powerpoint.runScript`, `onenote.runScript`. Run arbitrary `<Host>.run` Office.js code against the active document.
+- **Phase A workflow tools** — `excel.tabulateRegion`, `excel.applyDiff`, `excel.summarizeWorkbook`, `word.applyEdits`, `outlook.draftReply`, `powerpoint.rebuildSlideFromOutline`, `onenote.appendToPage`. Each one is a single tool call that replaces what used to be 5–20 primitive calls — see [PLAN-workflow-surface.md](PLAN-workflow-surface.md) for the design rationale.
+- **Cross-host orchestration** — `office.embed` reads from one Office host (Excel) and writes to another (PowerPoint) in a single tool call.
 - **Page interaction** — screenshot, snapshot, click, fill, type, hover, navigate, evaluate, console log, network log, and more
 - **Add-in lifecycle** — detect, launch, and stop add-ins for any Office host; open task-pane dialogs
 - **MCP-native stdio transport** — plug into Claude Code, Cursor, VS Code GitHub Copilot, Codex, Windsurf, or any MCP-compatible client
@@ -161,19 +163,27 @@ The `urlPattern` parameter accepted by most tools selects the WebView2 page by s
 
 ## Tool Groups
 
-After Phase 0 of [PLAN-workflow-surface.md](PLAN-workflow-surface.md) the host surface is intentionally narrow. Only the per-host `runScript` escape hatch is exposed today. Workflow-shaped Office tools (`excel.tabulate_region`, `excel.apply_diff`, `word.restructure_outline`, `outlook.triage_inbox`, `powerpoint.rebuild_slide_from_outline`, cross-host `office.embed`/`office.export`, …) are landing in Phase A.
+Phase 0 of [PLAN-workflow-surface.md](PLAN-workflow-surface.md) deleted the raw `cdp.*` surface and the host primitive tools; Phase A reintroduces a small, workflow-shaped surface. Each workflow tool is one MCP call that runs a single Office.js batch (one CDP round-trip), replacing the multi-call primitive sequences agents previously had to compose.
 
-| Prefix | Count | Description |
-|---|---|---|
-| `excel.runScript` | 1 | Run an `Excel.run` callback against the active workbook |
-| `word.runScript` | 1 | Run a `Word.run` callback against the active document |
-| `outlook.runScript` | 1 | Run a custom callback against `Office.context.mailbox` |
-| `powerpoint.runScript` | 1 | Run a `PowerPoint.run` callback against the active presentation |
-| `onenote.runScript` | 1 | Run a `OneNote.run` callback against the active notebook |
-| `page.*` | ~15 | Screenshot, snapshot, click, fill, type, hover, navigate, evaluate, wait, console log, network log |
-| `pages.*` | 4 | List, select, close, dialog |
-| `addin.*` | 6 | Detect, launch, stop, context info, CF runtime info, dialog |
-| `inspect.*` / `interact.*` | — | DOM / accessibility inspection and high-level interaction primitives |
+| Tool | Description |
+|---|---|
+| `excel.runScript` | Run an `Excel.run` callback against the active workbook |
+| `excel.tabulateRegion` | Load a range and return rows-as-objects + per-column type tags |
+| `excel.applyDiff` | Apply a batch of cell/range patches in one `Excel.run` |
+| `excel.summarizeWorkbook` | One-call workbook discovery: sheets, tables, named ranges, used-range bounds |
+| `word.runScript` | Run a `Word.run` callback against the active document |
+| `word.applyEdits` | Apply a batch of find/replace edits in one `Word.run` |
+| `outlook.runScript` | Run a custom callback against `Office.context.mailbox` |
+| `outlook.draftReply` | Set subject and/or body on a compose-mode item in one call |
+| `powerpoint.runScript` | Run a `PowerPoint.run` callback against the active presentation |
+| `powerpoint.rebuildSlideFromOutline` | Rewrite a slide's title and/or body bullets in one `PowerPoint.run` |
+| `onenote.runScript` | Run a `OneNote.run` callback against the active notebook |
+| `onenote.appendToPage` | Append HTML and/or bullets to a OneNote page in one call |
+| `office.embed` | Cross-host: read an Excel range and insert it onto a PowerPoint slide |
+| `page.*` | Screenshot, snapshot, click, fill, type, hover, navigate, evaluate, wait, console log, network log |
+| `pages.*` | List, select, close, dialog |
+| `addin.*` | Detect, launch, stop, context info, CF runtime info, dialog |
+| `inspect.*` / `interact.*` | DOM / accessibility inspection and high-level interaction primitives |
 
 ## Flags & Environment Variables
 
