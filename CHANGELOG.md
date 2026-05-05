@@ -4,6 +4,65 @@
 
 ### Added
 
+- **Phase B of `PLAN-workflow-surface.md` — server-side query engine +
+  persistent document context cache.** Adds two complementary primitives on top
+  of Phase A: a JSON-shaped query DSL that runs filter / project / groupBy /
+  agg / limit inside the host so 100k-row workbooks become 5-row answers, and
+  a doccache that turns repeated discovery calls into in-memory hits without
+  another CDP round-trip.
+  - **Query engine** (`__queryEngine` in `internal/js/_preamble.js`).
+    Tiny JSONLogic-shaped DSL: `{ filter, project, groupBy, agg, limit }`.
+    Filter ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `in`,
+    `contains`, `var`. Aggregations: `sum`, `count`, `avg`, `min`, `max` with
+    optional `as` alias. String filter args resolve as field names when the
+    row has a matching key, otherwise as literals.
+  - `excel.query` (`internal/js/excel_query.js` +
+    `internal/tools/exceltool/query.go`) — load a range, project values into
+    row objects keyed by inferred or supplied headers, then run the query
+    engine. `maxCells` (default 500k) bails with `truncated=true` on huge
+    ranges. Headers can be `first_row` (default), `none`, or an explicit
+    string array.
+  - `outlook.query` (`internal/js/outlook_query.js` +
+    `internal/tools/outlooktool/query.go`) — projects the active mail item
+    into a single record set and runs the query engine. v1 limitation: no
+    folder-wide enumeration (would require a REST token); the payload exposes
+    a `note` field calling out the active-item scope.
+  - `powerpoint.query` (`internal/js/powerpoint_query.js` +
+    `internal/tools/powerpointtool/query.go`) — projects every shape in every
+    slide into `{slideId, slideIndex, shapeId, name, type, left, top, width,
+    height}` records. Useful for "which slides have charts" or "shape count
+    per slide" answers in one call.
+  - `onenote.query` (`internal/js/onenote_query.js` +
+    `internal/tools/onenotetool/query.go`) — projects pages of the active
+    section into `{id, title}` records.
+  - **Persistent document context cache** (`internal/doccache/`). New package
+    with a single `Store` type that round-trips `{host, filePath, fingerprint,
+    data, updatedAt}` entries to
+    `%LOCALAPPDATA%\office-addin-mcp\doccache.json` (Windows) /
+    `$XDG_CACHE_HOME/office-addin-mcp/doccache.json` elsewhere, mode 0600,
+    atomic-rename writes. Empty filePaths and obvious temp paths skip the
+    cache. `--no-doccache` startup flag disables both reads and writes.
+  - `excel.discover`, `word.discover`, `outlook.discover`, `powerpoint.discover`,
+    `onenote.discover` — cached per-host discovery tools. Each runs its
+    discover JS payload (which returns `filePath` + a coarse fingerprint plus
+    full snapshot), compares against the on-disk cache, and returns the
+    cached snapshot when fingerprints match. `force=true` bypasses. Fresh
+    snapshots are persisted on every call. Result envelope is augmented with
+    `{cached, filePath, fingerprint}` so callers can branch on cache state
+    without parsing summaries.
+  - **Shared discover wrapper** (`internal/tools/officetool/discover.go`).
+    `RunDiscover` is the single attach → run payload → consult-cache pipeline
+    every host's `Discover()` constructor delegates to. Keeps the per-host
+    Go file to a schema + parameter-decode shim.
+  - JS payloads: `internal/js/{excel,word,outlook,powerpoint,onenote}_discover.js`.
+    Each returns `{filePath, fingerprint, ...}` where fingerprint is a cheap
+    deterministic hash of structural counts (sheets/tables/named/cells for
+    Excel, sections/CC/word-count for Word, etc.). Drift on mutation; identical
+    on no-op.
+  - Wired through `tools.RunEnv.DocCache`, `tools.Dispatcher.DocCache`,
+    `mcp.Options.DocCache`. nil-safe via the package's pointer-receiver
+    methods so disabled / nil stores fall through to a uniform miss.
+
 - **Phase A of `PLAN-workflow-surface.md` — workflow tools + cross-host
   orchestration.** Reintroduces a small, agent-shaped Office surface on top of
   the Phase 0 narrowing. Each new tool collapses what used to be 5–20 primitive

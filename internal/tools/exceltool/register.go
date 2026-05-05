@@ -14,4 +14,6 @@ func Register(r *tools.Registry) {
 	r.MustRegister(TabulateRegion())
 	r.MustRegister(ApplyDiff())
 	r.MustRegister(SummarizeWorkbook())
+	r.MustRegister(Query())
+	r.MustRegister(Discover())
 }

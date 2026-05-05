@@ -10,4 +10,6 @@ import "github.com/dsbissett/office-addin-mcp/internal/tools"
 func Register(r *tools.Registry) {
 	r.MustRegister(RunScript())
 	r.MustRegister(RebuildSlideFromOutline())
+	r.MustRegister(Query())
+	r.MustRegister(Discover())
 }

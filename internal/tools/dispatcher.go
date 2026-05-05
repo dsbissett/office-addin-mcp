@@ -12,6 +12,7 @@ import (
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
+	"github.com/dsbissett/office-addin-mcp/internal/doccache"
 	internallog "github.com/dsbissett/office-addin-mcp/internal/log"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
@@ -41,6 +42,9 @@ type Dispatcher struct {
 	// SetManifest stores a manifest at server scope (Phase 3). Wired into
 	// RunEnv.SetManifest.
 	SetManifest func(*addin.Manifest)
+	// DocCache is the cross-session document discovery cache. Wired into
+	// every RunEnv. nil falls through to a disabled store at first access.
+	DocCache *doccache.Store
 }
 
 // NewDispatcher builds a Dispatcher.
@@ -111,6 +115,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 			SetEndpoint:    d.SetEndpoint,
 			Manifest:       d.Manifest,
 			SetManifest:    d.SetManifest,
+			DocCache:       d.DocCache,
 		}
 		res := tool.Run(ctx, rawParams, env)
 		return finalize(diag, start, 0, res)
@@ -142,6 +147,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	env.SetEndpoint = d.SetEndpoint
 	env.Manifest = d.Manifest
 	env.SetManifest = d.SetManifest
+	env.DocCache = d.DocCache
 	res := tool.Run(ctx, rawParams, env)
 
 	return finalize(diag, start, conn.RoundTrips()-rtStart, res)

@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 
+	"github.com/dsbissett/office-addin-mcp/internal/doccache"
 	"github.com/dsbissett/office-addin-mcp/internal/launch"
 	mcpserver "github.com/dsbissett/office-addin-mcp/internal/mcp"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
@@ -42,6 +43,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		launchAddin    = fs.Bool("launch-addin", false, "On startup, if no CDP endpoint is reachable, detect the add-in project under cwd and run addin.launch automatically. Works for any Office host (Excel, Word, Outlook, PowerPoint, OneNote). Equivalent to calling addin.ensureRunning at boot.")
 		launchExcel    = fs.Bool("launch-excel", false, "Deprecated alias for --launch-addin. Kept for backwards compatibility.")
 		allowDangerous = fs.Bool("allow-dangerous-cdp", false, "Allow CDP methods marked dangerous (Browser.crash, Runtime.terminateExecution, ...). May also be set via "+dangerousEnvVar+"=1.")
+		noDocCache     = fs.Bool("no-doccache", false, "Disable the persistent document discovery cache used by *.discover tools. Cache misses still run; nothing reads or writes "+doccache.DefaultPath()+".")
 	)
 
 	if err := fs.Parse(args); err != nil {
@@ -109,6 +111,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		AllowDangerous: dangerous,
 		Registry:       mcpserver.DefaultRegistry(),
 		Sessions:       sessMgr,
+		DocCache:       doccache.Open("", *noDocCache),
 	})
 
 	if err := srv.Run(ctx); err != nil {
@@ -170,5 +173,6 @@ func writeUsage(w io.Writer) {
 	fmt.Fprintln(w, "  --launch-addin          Auto-detect+launch the Office add-in under cwd at startup if no CDP endpoint is reachable")
 	fmt.Fprintln(w, "  --launch-excel          Deprecated alias for --launch-addin")
 	fmt.Fprintln(w, "  --allow-dangerous-cdp   Permit dangerous CDP methods (env: "+dangerousEnvVar+")")
+	fmt.Fprintln(w, "  --no-doccache           Disable the persistent document discovery cache (*.discover tools)")
 	fmt.Fprintln(w, "  --version               Print version and exit")
 }
