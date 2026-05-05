@@ -11,8 +11,8 @@ import (
 func TestRegisterCompilesSchemas(t *testing.T) {
 	r := tools.NewRegistry()
 	Register(r)
-	if got := len(r.List()); got != 6 {
-		t.Fatalf("expected 6 onenote.* tools registered, got %d", got)
+	if got := len(r.List()); got != 1 {
+		t.Fatalf("expected 1 onenote.* tool registered (runScript only), got %d", got)
 	}
 }
 

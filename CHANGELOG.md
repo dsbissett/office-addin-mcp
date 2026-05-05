@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Removed
+
+- **Phase 0 of `PLAN-workflow-surface.md` — surface narrowing.**
+  The raw `cdp.*` tool surface (~411 generated methods, ~10.5K LOC)
+  and the host primitive tools (`excel.readRange`, `word.readBody`,
+  `outlook.getSubject`, …) are no longer registered as MCP tools.
+  Each host keeps a single `runScript` escape hatch; the rest will be
+  replaced by workflow-shaped tools in Phase A. Reasoning: the
+  primitive surface was SDK-shaped, not agent-shaped — LLMs perform
+  poorly when forced to compose 20 primitive calls and reason over
+  100k cells in tokens.
+  - `internal/tools/cdptool/` — deleted (package, generated tools,
+    naming/dangerous/binary tests).
+  - `cmd/gen-cdp-tools/` — deleted (CDP protocol JSON generator and
+    its drift/golden tests).
+  - `cmd/office-addin-mcp/main.go` — removed `--expose-raw-cdp`,
+    `--cdp-domains`, `--list-cdp-domains` flags, the
+    `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP` env var, `buildCDPSelection`,
+    and the `cdptool` import. `DefaultRegistry` is now called with no
+    arguments.
+  - `cmd/office-addin-mcp/main_test.go` — removed
+    `TestBuildCDPSelection_*` tests; non-CDP tests retained.
+  - `internal/mcp/registry.go` — removed `CDPSelection`; simplified
+    `DefaultRegistry` to take no arguments.
+  - `internal/mcp/registry_test.go` — replaced
+    `TestExposeRawCDPRegistersGenerated` and
+    `TestCDPDomainsFilterRegistersOnlyNamedDomains` with a single
+    `TestDefaultRegistryHasNoRawCDP` guard against accidental
+    reintroduction.
+  - `internal/tools/{exceltool,wordtool,outlooktool,powerpointtool,onenotetool}/register.go`
+    — narrowed `Register` to register only `RunScript()`. The primitive
+    constructors stay in their packages as reusable building blocks for
+    Phase A workflow tools but are not registered as MCP tools.
+  - `internal/tools/*/register_test.go` — count assertions updated to
+    expect 1 tool (`runScript`) per host.
+  - `README.md`, `CLAUDE.md` — updated tool group inventory and project
+    description to reflect the narrowed surface.
+
 ### Changed
 
 - **Multi-host F9 — `--launch-addin` flag (host-agnostic) with

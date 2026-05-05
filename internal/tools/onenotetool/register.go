@@ -2,12 +2,11 @@ package onenotetool
 
 import "github.com/dsbissett/office-addin-mcp/internal/tools"
 
-// Register adds all onenote.* tools to the registry.
+// Register adds the onenote.* tool surface to the registry.
+//
+// Phase 0 of PLAN-workflow-surface narrowed this to the runScript escape
+// hatch only. Primitive constructors stay in the package as reusable
+// building blocks for Phase A workflow tools.
 func Register(r *tools.Registry) {
-	r.MustRegister(ReadNotebooks())
-	r.MustRegister(ReadSections())
-	r.MustRegister(ReadPages())
-	r.MustRegister(ReadPage())
-	r.MustRegister(AddPage())
 	r.MustRegister(RunScript())
 }

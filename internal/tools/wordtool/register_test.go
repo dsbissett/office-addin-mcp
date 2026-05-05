@@ -14,8 +14,8 @@ import (
 func TestRegisterCompilesSchemas(t *testing.T) {
 	r := tools.NewRegistry()
 	Register(r)
-	if got := len(r.List()); got != 8 {
-		t.Fatalf("expected 8 word.* tools registered, got %d", got)
+	if got := len(r.List()); got != 1 {
+		t.Fatalf("expected 1 word.* tool registered (runScript only), got %d", got)
 	}
 }
 
