@@ -4,6 +4,39 @@
 
 ### Added
 
+- **Phase D of `PLAN-workflow-surface.md` — MCP Resources + polling-based subscriptions.**
+  Adds the MCP resource protocol so LLM clients reference Office documents by URI
+  instead of re-fetching data every prompt, and receive push notifications when
+  documents change. Implemented as read-only resources (D1) plus polling-based
+  subscriptions (D2/D3 unified); Office.js native event subscriptions are
+  deferred.
+  - **Resource URIs** follow the grammar from the plan:
+    - `office://excel/<workbook>/<sheet>!<range>` — Excel range data via
+      `excel.tabulateRegion`
+    - `office://word/<doc>/bookmark/<name>` — Word document or bookmark via
+      `word.runScript` with inline scripts
+    - `office://outlook/<folder>` — Outlook mail folder items via `outlook.query`
+    - `office://pp/<deck>/slide<N>` — PowerPoint slides via `powerpoint.query`
+    - `office://onenote/<notebook>/<section>/<page>` — OneNote pages via
+      `onenote.query`
+  - **URI parsing** (`internal/resources/uri.go`): `ParseURI` validates the
+    scheme (`office://`), extracts the host (`excel`, `word`, `outlook`, `pp`,
+    `onenote`), and preserves path segments for host-specific handlers.
+  - **Resource Provider** (`internal/resources/provider.go`): dispatches
+    appropriate tools to read resource content (`Read` method) and fetch
+    fingerprints for change detection (`Fingerprint` method). All reads go
+    through `Dispatcher.Dispatch` so session lifecycle, CDC reconnect budget,
+    and error enrichment are preserved.
+  - **Polling-based Watcher** (`internal/resources/watcher.go`): tracks
+    subscriptions and polls every 30s for fingerprint changes. On change,
+    emits `notifications/resources/updated` to subscribed MCP clients.
+    Goroutine per subscription; `Unsubscribe` or `Close()` cancels immediately.
+  - **MCP Integration** (`internal/mcp/server.go` + `internal/mcp/resources.go`):
+    registers five resource templates on the SDK server (one per host). Wires
+    `SubscribeHandler` and `UnsubscribeHandler` into `sdk.ServerOptions` to
+    start/stop polling on client subscription. Auto-advertises `resources`
+    capability.
+
 - **Phase C of `PLAN-workflow-surface.md` — auto-diagnostics enrichment.**
   Adds a dispatcher-level Office.js error classifier that mutates failure
   envelopes in place with structured recovery hints, so an AI client can

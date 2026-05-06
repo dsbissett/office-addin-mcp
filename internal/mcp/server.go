@@ -14,6 +14,7 @@ import (
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/doccache"
+	"github.com/dsbissett/office-addin-mcp/internal/resources"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
@@ -46,6 +47,9 @@ type Server struct {
 	sdk  *sdk.Server
 	disp *tools.Dispatcher
 
+	resourceProvider *resources.Provider
+	resourceWatcher  *resources.Watcher
+
 	endpointMu sync.RWMutex
 	endpoint   webview2.Config
 
@@ -73,12 +77,9 @@ func NewServer(opts Options) *Server {
 		opts.DocCache = doccache.Open("", false)
 	}
 
-	sdkServer := sdk.NewServer(&sdk.Implementation{
-		Name:    opts.Name,
-		Version: opts.Version,
-	}, nil)
+	s := &Server{endpoint: opts.Endpoint}
 
-	s := &Server{sdk: sdkServer, endpoint: opts.Endpoint}
+	// Create the dispatcher before building SDK server and resources.
 	s.disp = &tools.Dispatcher{
 		Registry:       opts.Registry,
 		Sessions:       opts.Sessions,
@@ -88,9 +89,43 @@ func NewServer(opts Options) *Server {
 		SetManifest:    s.setManifest,
 		DocCache:       opts.DocCache,
 	}
+
+	// Create the resource provider.
+	s.resourceProvider = &resources.Provider{
+		Disp:     s.disp,
+		Endpoint: s.currentEndpoint,
+		Cache:    opts.DocCache,
+	}
+
+	// Create the resource watcher with a notify callback.
+	s.resourceWatcher = resources.NewWatcher(s.resourceProvider, func(ctx context.Context, uri string) {
+		_ = s.sdk.ResourceUpdated(ctx, &sdk.ResourceUpdatedNotificationParams{URI: uri})
+	})
+
+	// Build SDK server with subscription handlers.
+	sdkServer := sdk.NewServer(&sdk.Implementation{
+		Name:    opts.Name,
+		Version: opts.Version,
+	}, &sdk.ServerOptions{
+		SubscribeHandler: func(ctx context.Context, req *sdk.SubscribeRequest) error {
+			return s.resourceWatcher.Subscribe(ctx, req.Params.URI)
+		},
+		UnsubscribeHandler: func(ctx context.Context, req *sdk.UnsubscribeRequest) error {
+			s.resourceWatcher.Unsubscribe(req.Params.URI)
+			return nil
+		},
+	})
+
+	s.sdk = sdkServer
+
+	// Register tools.
 	for _, t := range opts.Registry.List() {
 		s.registerTool(t)
 	}
+
+	// Register resources.
+	registerResources(s.sdk, s.resourceProvider)
+
 	return s
 }
 
@@ -129,6 +164,8 @@ func (s *Server) currentManifest() *addin.Manifest {
 // Run starts the MCP stdio loop. Blocks until the peer disconnects (stdin
 // closes) or ctx is canceled.
 func (s *Server) Run(ctx context.Context) error {
+	defer s.resourceWatcher.Close()
+
 	if err := s.sdk.Run(ctx, &sdk.StdioTransport{}); err != nil {
 		return fmt.Errorf("mcp serve: %w", err)
 	}
