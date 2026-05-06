@@ -12,7 +12,9 @@ import (
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
+	"github.com/dsbissett/office-addin-mcp/internal/doccache"
 	internallog "github.com/dsbissett/office-addin-mcp/internal/log"
+	"github.com/dsbissett/office-addin-mcp/internal/recorder"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
@@ -41,6 +43,12 @@ type Dispatcher struct {
 	// SetManifest stores a manifest at server scope (Phase 3). Wired into
 	// RunEnv.SetManifest.
 	SetManifest func(*addin.Manifest)
+	// DocCache is the cross-session document discovery cache. Wired into
+	// every RunEnv. nil falls through to a disabled store at first access.
+	DocCache *doccache.Store
+	// Recorder is the macro recording store. Wired into RunEnv.Recording.
+	// Nil when recording is not available.
+	Recorder *recorder.Store
 }
 
 // NewDispatcher builds a Dispatcher.
@@ -111,8 +119,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 			SetEndpoint:    d.SetEndpoint,
 			Manifest:       d.Manifest,
 			SetManifest:    d.SetManifest,
+			DocCache:       d.DocCache,
+			Recorder:       d.Recorder,
+		}
+		if d.Recorder != nil {
+			env.Recording = func(tool string, params []byte) error {
+				return d.Recorder.Append(tool, params)
+			}
 		}
 		res := tool.Run(ctx, rawParams, env)
+		if res.Err != nil && res.Err.Category == CategoryOfficeJS {
+			classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
+		}
+		// Record successful tool calls when recording is active.
+		if res.Err == nil && env.Recording != nil {
+			_ = env.Recording(req.Tool, rawParams)
+		}
 		return finalize(diag, start, 0, res)
 	}
 
@@ -137,12 +159,22 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 
 	rtStart := conn.RoundTrips()
 
-	env := buildRunEnv(sess, conn, &diag, d.AllowDangerous, d.Manifest)
+	env := buildRunEnv(sess, conn, &diag, d.AllowDangerous, d.Manifest, d.Recorder)
 	env.Endpoint = req.Endpoint
 	env.SetEndpoint = d.SetEndpoint
 	env.Manifest = d.Manifest
 	env.SetManifest = d.SetManifest
+	env.DocCache = d.DocCache
+	env.Recorder = d.Recorder
 	res := tool.Run(ctx, rawParams, env)
+	if res.Err != nil && res.Err.Category == CategoryOfficeJS {
+		classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
+	}
+
+	// Record successful tool calls when recording is active.
+	if res.Err == nil && env.Recording != nil {
+		_ = env.Recording(req.Tool, rawParams)
+	}
 
 	return finalize(diag, start, conn.RoundTrips()-rtStart, res)
 }
@@ -235,7 +267,7 @@ func MarshalEnvelope(env Envelope) ([]byte, error) {
 // repeat calls with the same selector skip Target.getTargets and
 // Target.attachToTarget — manifesting as the CDPRoundTrips drop the Phase 5
 // deliverable expects.
-func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics, allowDangerous bool, manifest func() *addin.Manifest) *RunEnv {
+func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics, allowDangerous bool, manifest func() *addin.Manifest, rec *recorder.Store) *RunEnv {
 	return &RunEnv{
 		Diag: diag,
 		Conn: func(_ context.Context) (*cdp.Connection, error) {
@@ -307,6 +339,12 @@ func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics,
 		},
 		MarkEventPumping: func(kind session.EventBufKind, cdpSID string, maxBuffer int) bool {
 			return sess.MarkEventPumping(kind, cdpSID, maxBuffer)
+		},
+		Recording: func(tool string, params []byte) error {
+			if rec == nil {
+				return nil
+			}
+			return rec.Append(tool, params)
 		},
 	}
 }

@@ -11,8 +11,8 @@ import (
 func TestRegisterCompilesSchemas(t *testing.T) {
 	r := tools.NewRegistry()
 	Register(r)
-	if got := len(r.List()); got != 6 {
-		t.Fatalf("expected 6 powerpoint.* tools registered, got %d", got)
+	if got := len(r.List()); got != 4 {
+		t.Fatalf("expected 4 powerpoint.* tools registered (runScript + rebuildSlideFromOutline + query + discover), got %d", got)
 	}
 }
 

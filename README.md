@@ -6,12 +6,11 @@ MCP server for driving Office add-ins (Excel, Word, Outlook, PowerPoint, OneNote
 
 See the [latest release](https://github.com/dsbissett/office-addin-mcp/releases/latest) and [CHANGELOG.md](CHANGELOG.md).
 
-## Features
-
-- **64 Office host tools across 5 apps** — Excel (37), Word (8), Outlook (7), PowerPoint (6), OneNote (6). Read/write document content, ranges, tables, charts, pivot tables, slides, mail items, notebook pages, and arbitrary `<Host>.run` scripts via embedded Office.js payloads
+- **Per-host `runScript` escape hatch across 5 apps** — `excel.runScript`, `word.runScript`, `outlook.runScript`, `powerpoint.runScript`, `onenote.runScript`. Run arbitrary `<Host>.run` Office.js code against the active document.
+- **Phase A workflow tools** — `excel.tabulateRegion`, `excel.applyDiff`, `excel.summarizeWorkbook`, `word.applyEdits`, `outlook.draftReply`, `powerpoint.rebuildSlideFromOutline`, `onenote.appendToPage`. Each one is a single tool call that replaces what used to be 5–20 primitive calls — see [PLAN-workflow-surface.md](PLAN-workflow-surface.md) for the design rationale.
+- **Cross-host orchestration** — `office.embed` reads from one Office host (Excel) and writes to another (PowerPoint) in a single tool call.
 - **Page interaction** — screenshot, snapshot, click, fill, type, hover, navigate, evaluate, console log, network log, and more
 - **Add-in lifecycle** — detect, launch, and stop add-ins for any Office host; open task-pane dialogs
-- **~411 raw CDP methods** — code-generated from Chrome's protocol JSON, hidden by default (`--expose-raw-cdp` to enable)
 - **MCP-native stdio transport** — plug into Claude Code, Cursor, VS Code GitHub Copilot, Codex, Windsurf, or any MCP-compatible client
 
 ## Requirements
@@ -21,7 +20,7 @@ See the [latest release](https://github.com/dsbissett/office-addin-mcp/releases/
 | **Office on Windows 10/11** | Required for `excel.*` / `word.*` / `outlook.*` / `powerpoint.*` / `onenote.*` / `addin.*` tools (Office uses WebView2 only on Windows) |
 | **Node.js 14+** | For `npx` install |
 | **Go 1.22+** | Build from source only |
-| macOS / Linux | Supported for `page.*` / `cdp.*` tools against headless Chrome |
+| macOS / Linux | Supported for `page.*` tools against headless Chrome |
 
 ## Install
 
@@ -164,17 +163,27 @@ The `urlPattern` parameter accepted by most tools selects the WebView2 page by s
 
 ## Tool Groups
 
-| Prefix | Count | Description |
-|---|---|---|
-| `excel.*` | 37 | Read/write ranges, worksheets, tables, charts, pivot tables, custom XML, `Excel.run` scripts |
-| `word.*` | 8 | Read/write document body, paragraphs, selection, search, properties, `Word.run` scripts |
-| `outlook.*` | 7 | Read item, get/set body, get/set subject, get recipients, custom mailbox scripts |
-| `powerpoint.*` | 6 | Read presentation/slides, read shapes on a slide, add slide, read selection, `PowerPoint.run` scripts |
-| `onenote.*` | 6 | List notebooks/sections/pages, read active page, add page, `OneNote.run` scripts |
-| `page.*` | ~15 | Screenshot, snapshot, click, fill, type, hover, navigate, evaluate, wait, console log, network log |
-| `pages.*` | 4 | List, select, close, dialog |
-| `addin.*` | 6 | Detect, launch, stop, context info, CF runtime info, dialog |
-| `cdp.*` | ~411 | Raw Chrome DevTools Protocol methods (hidden by default, enable with `--expose-raw-cdp`) |
+Phase 0 of [PLAN-workflow-surface.md](PLAN-workflow-surface.md) deleted the raw `cdp.*` surface and the host primitive tools; Phase A reintroduces a small, workflow-shaped surface. Each workflow tool is one MCP call that runs a single Office.js batch (one CDP round-trip), replacing the multi-call primitive sequences agents previously had to compose.
+
+| Tool | Description |
+|---|---|
+| `excel.runScript` | Run an `Excel.run` callback against the active workbook |
+| `excel.tabulateRegion` | Load a range and return rows-as-objects + per-column type tags |
+| `excel.applyDiff` | Apply a batch of cell/range patches in one `Excel.run` |
+| `excel.summarizeWorkbook` | One-call workbook discovery: sheets, tables, named ranges, used-range bounds |
+| `word.runScript` | Run a `Word.run` callback against the active document |
+| `word.applyEdits` | Apply a batch of find/replace edits in one `Word.run` |
+| `outlook.runScript` | Run a custom callback against `Office.context.mailbox` |
+| `outlook.draftReply` | Set subject and/or body on a compose-mode item in one call |
+| `powerpoint.runScript` | Run a `PowerPoint.run` callback against the active presentation |
+| `powerpoint.rebuildSlideFromOutline` | Rewrite a slide's title and/or body bullets in one `PowerPoint.run` |
+| `onenote.runScript` | Run a `OneNote.run` callback against the active notebook |
+| `onenote.appendToPage` | Append HTML and/or bullets to a OneNote page in one call |
+| `office.embed` | Cross-host: read an Excel range and insert it onto a PowerPoint slide |
+| `page.*` | Screenshot, snapshot, click, fill, type, hover, navigate, evaluate, wait, console log, network log |
+| `pages.*` | List, select, close, dialog |
+| `addin.*` | Detect, launch, stop, context info, CF runtime info, dialog |
+| `inspect.*` / `interact.*` | DOM / accessibility inspection and high-level interaction primitives |
 
 ## Flags & Environment Variables
 
@@ -186,9 +195,6 @@ The `urlPattern` parameter accepted by most tools selects the WebView2 page by s
 | `--log-level` | — | `info` | slog level: `debug`, `info`, `warn`, `error` |
 | `--launch-addin` | — | off | Auto-detect and launch the Office add-in under cwd at startup if no CDP endpoint is reachable. Works for any host (Excel, Word, Outlook, PowerPoint, OneNote) |
 | `--launch-excel` | — | off | Deprecated alias for `--launch-addin` |
-| `--cdp-domains` | — | — | Comma-separated CDP domains to expose (e.g. `DOM,Page,Runtime`); implies `--expose-raw-cdp` |
-| `--list-cdp-domains` | — | — | Print the available CDP domain names and exit |
-| `--expose-raw-cdp` | `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP` | off | Register ~411 raw `cdp.*` methods |
 | `--allow-dangerous-cdp` | `OAMCP_ALLOW_DANGEROUS_CDP` | off | Enable crash/terminate CDP methods |
 | `--version` | — | — | Print binary version and exit |
 

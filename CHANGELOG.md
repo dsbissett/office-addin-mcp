@@ -2,6 +2,252 @@
 
 ## Unreleased
 
+### Added
+
+- **Phase D of `PLAN-workflow-surface.md` — MCP Resources + polling-based subscriptions.**
+  Adds the MCP resource protocol so LLM clients reference Office documents by URI
+  instead of re-fetching data every prompt, and receive push notifications when
+  documents change. Implemented as read-only resources (D1) plus polling-based
+  subscriptions (D2/D3 unified); Office.js native event subscriptions are
+  deferred.
+  - **Resource URIs** follow the grammar from the plan:
+    - `office://excel/<workbook>/<sheet>!<range>` — Excel range data via
+      `excel.tabulateRegion`
+    - `office://word/<doc>/bookmark/<name>` — Word document or bookmark via
+      `word.runScript` with inline scripts
+    - `office://outlook/<folder>` — Outlook mail folder items via `outlook.query`
+    - `office://pp/<deck>/slide<N>` — PowerPoint slides via `powerpoint.query`
+    - `office://onenote/<notebook>/<section>/<page>` — OneNote pages via
+      `onenote.query`
+  - **URI parsing** (`internal/resources/uri.go`): `ParseURI` validates the
+    scheme (`office://`), extracts the host (`excel`, `word`, `outlook`, `pp`,
+    `onenote`), and preserves path segments for host-specific handlers.
+  - **Resource Provider** (`internal/resources/provider.go`): dispatches
+    appropriate tools to read resource content (`Read` method) and fetch
+    fingerprints for change detection (`Fingerprint` method). All reads go
+    through `Dispatcher.Dispatch` so session lifecycle, CDC reconnect budget,
+    and error enrichment are preserved.
+  - **Polling-based Watcher** (`internal/resources/watcher.go`): tracks
+    subscriptions and polls every 30s for fingerprint changes. On change,
+    emits `notifications/resources/updated` to subscribed MCP clients.
+    Goroutine per subscription; `Unsubscribe` or `Close()` cancels immediately.
+  - **MCP Integration** (`internal/mcp/server.go` + `internal/mcp/resources.go`):
+    registers five resource templates on the SDK server (one per host). Wires
+    `SubscribeHandler` and `UnsubscribeHandler` into `sdk.ServerOptions` to
+    start/stop polling on client subscription. Auto-advertises `resources`
+    capability.
+
+- **Phase C of `PLAN-workflow-surface.md` — auto-diagnostics enrichment.**
+  Adds a dispatcher-level Office.js error classifier that mutates failure
+  envelopes in place with structured recovery hints, so an AI client can
+  self-correct in one round-trip instead of three. Bounded to one extra CDP
+  call per error (a single Office.js payload against the already-attached
+  target), and prefers the doccache as its source when an entry is present.
+  - `classifyOfficeJSErr` in `internal/tools/diagnostics.go` runs after every
+    `tool.Run` whose result has `Category == office_js`. Switches on
+    `host(toolName)` + `errEnv.Code`:
+    - **Excel `ItemNotFound`** — populates `Details["available_sheets"]` (from
+      doccache or a one-shot `excel.listWorksheets` call),
+      `Details["nearest_name_suggestions"]` (Levenshtein on the sheet portion
+      of `address`), `Details["failing_address"]`, and a `RecoveryHint` that
+      points at those keys.
+    - **Excel `InvalidArgument`** — parses the address into
+      `Details["parsed_address"] = {start_column, start_row, end_column?,
+      end_row?}` and flags `Details["column_out_of_bounds"]` / `row_out_of_bounds`
+      against Excel's XFD / 1,048,576 maxima.
+    - **PowerPoint `ItemNotFound` / `InvalidArgument`** — populates
+      `Details["slide_count"]` (from doccache or a one-shot
+      `powerpoint.discover` call) so the agent can retry with a valid 1-based
+      slide index.
+    - **Outlook compose-vs-read mismatch** — when the message hints at a mode
+      mismatch (`"compose"`, `"read mode"`, `"item mode"`, code
+      `InvalidOperation` / `ItemNotFound`), populates `Details["item_mode"]`
+      from doccache or a one-shot `outlook.discover` so the agent knows which
+      mode the active item is in.
+  - `doccache.Store.List(host)` returns every cached entry for a host,
+    most-recently-updated first. Used as the preferred enrichment source so
+    the dispatcher avoids an extra CDP call when a recent discovery is already
+    on disk.
+  - Source attribution: `Details["available_sheets_source"]` is `"doccache"`
+    or `"live"` so callers can reason about staleness.
+
+- **Phase B of `PLAN-workflow-surface.md` — server-side query engine +
+  persistent document context cache.** Adds two complementary primitives on top
+  of Phase A: a JSON-shaped query DSL that runs filter / project / groupBy /
+  agg / limit inside the host so 100k-row workbooks become 5-row answers, and
+  a doccache that turns repeated discovery calls into in-memory hits without
+  another CDP round-trip.
+  - **Query engine** (`__queryEngine` in `internal/js/_preamble.js`).
+    Tiny JSONLogic-shaped DSL: `{ filter, project, groupBy, agg, limit }`.
+    Filter ops: `==`, `!=`, `<`, `<=`, `>`, `>=`, `and`, `or`, `not`, `in`,
+    `contains`, `var`. Aggregations: `sum`, `count`, `avg`, `min`, `max` with
+    optional `as` alias. String filter args resolve as field names when the
+    row has a matching key, otherwise as literals.
+  - `excel.query` (`internal/js/excel_query.js` +
+    `internal/tools/exceltool/query.go`) — load a range, project values into
+    row objects keyed by inferred or supplied headers, then run the query
+    engine. `maxCells` (default 500k) bails with `truncated=true` on huge
+    ranges. Headers can be `first_row` (default), `none`, or an explicit
+    string array.
+  - `outlook.query` (`internal/js/outlook_query.js` +
+    `internal/tools/outlooktool/query.go`) — projects the active mail item
+    into a single record set and runs the query engine. v1 limitation: no
+    folder-wide enumeration (would require a REST token); the payload exposes
+    a `note` field calling out the active-item scope.
+  - `powerpoint.query` (`internal/js/powerpoint_query.js` +
+    `internal/tools/powerpointtool/query.go`) — projects every shape in every
+    slide into `{slideId, slideIndex, shapeId, name, type, left, top, width,
+    height}` records. Useful for "which slides have charts" or "shape count
+    per slide" answers in one call.
+  - `onenote.query` (`internal/js/onenote_query.js` +
+    `internal/tools/onenotetool/query.go`) — projects pages of the active
+    section into `{id, title}` records.
+  - **Persistent document context cache** (`internal/doccache/`). New package
+    with a single `Store` type that round-trips `{host, filePath, fingerprint,
+    data, updatedAt}` entries to
+    `%LOCALAPPDATA%\office-addin-mcp\doccache.json` (Windows) /
+    `$XDG_CACHE_HOME/office-addin-mcp/doccache.json` elsewhere, mode 0600,
+    atomic-rename writes. Empty filePaths and obvious temp paths skip the
+    cache. `--no-doccache` startup flag disables both reads and writes.
+  - `excel.discover`, `word.discover`, `outlook.discover`, `powerpoint.discover`,
+    `onenote.discover` — cached per-host discovery tools. Each runs its
+    discover JS payload (which returns `filePath` + a coarse fingerprint plus
+    full snapshot), compares against the on-disk cache, and returns the
+    cached snapshot when fingerprints match. `force=true` bypasses. Fresh
+    snapshots are persisted on every call. Result envelope is augmented with
+    `{cached, filePath, fingerprint}` so callers can branch on cache state
+    without parsing summaries.
+  - **Shared discover wrapper** (`internal/tools/officetool/discover.go`).
+    `RunDiscover` is the single attach → run payload → consult-cache pipeline
+    every host's `Discover()` constructor delegates to. Keeps the per-host
+    Go file to a schema + parameter-decode shim.
+  - JS payloads: `internal/js/{excel,word,outlook,powerpoint,onenote}_discover.js`.
+    Each returns `{filePath, fingerprint, ...}` where fingerprint is a cheap
+    deterministic hash of structural counts (sheets/tables/named/cells for
+    Excel, sections/CC/word-count for Word, etc.). Drift on mutation; identical
+    on no-op.
+  - Wired through `tools.RunEnv.DocCache`, `tools.Dispatcher.DocCache`,
+    `mcp.Options.DocCache`. nil-safe via the package's pointer-receiver
+    methods so disabled / nil stores fall through to a uniform miss.
+
+- **Phase A of `PLAN-workflow-surface.md` — workflow tools + cross-host
+  orchestration.** Reintroduces a small, agent-shaped Office surface on top of
+  the Phase 0 narrowing. Each new tool collapses what used to be 5–20 primitive
+  calls into one MCP dispatch + one Office.js batch (one CDP round-trip).
+  Live Office verification is manual; CI does not exercise a real workbook.
+  - `internal/js/excel_tabulate_region.js` + `internal/tools/exceltool/tabulate_region.go`
+    — `excel.tabulateRegion`. Reads a range and returns rows-as-objects keyed
+    by inferred or supplied headers, plus per-column type tags
+    (number / string / boolean / date / mixed). `headers: auto|first_row|none`,
+    `maxCells` cap (default 100k) bails with `truncated=true` instead of
+    streaming the whole grid.
+  - `internal/js/excel_apply_diff.js` + `internal/tools/exceltool/apply_diff.go`
+    — `excel.applyDiff`. Batches `{address, value|values, formula|formulas,
+    numberFormat}` patches into one `Excel.run` with one or two `context.sync`
+    calls (a second pass is needed only when a scalar `numberFormat` is
+    supplied — must broadcast across the loaded range shape). Replaces N
+    sequential `excel.writeRange` round-trips.
+  - `internal/js/excel_summarize_workbook.js` + `internal/tools/exceltool/summarize_workbook.go`
+    — `excel.summarizeWorkbook`. One-call workbook discovery: sheet list with
+    used-range bounds per sheet, table catalog (name/sheet/header+totals
+    flags), named ranges (name/type/value/scope/comment). Replaces the
+    primitive `listWorksheets + listTables + listNamedItems + per-sheet
+    usedRange` probe.
+  - `internal/js/word_apply_edits.js` + `internal/tools/wordtool/apply_edits.go`
+    — `word.applyEdits`. Batches `{find, replace, matchCase?, matchWholeWord?}`
+    edits in one `Word.run`. Each edit's `body.search` results are loaded in
+    the first sync, replacements applied + flushed in the second. Returns a
+    per-edit `{find, replace, replaced}` count.
+  - `internal/js/outlook_draft_reply.js` + `internal/tools/outlooktool/draft_reply.go`
+    — `outlook.draftReply`. Sets `subject` and/or `body` on the active
+    compose-mode mailbox item in one tool call. Refuses with
+    `outlook_compose_required` when `body.setAsync` is unavailable (read-mode
+    item). `coercionType` defaults to `html`.
+  - `internal/js/powerpoint_rebuild_slide_from_outline.js` +
+    `internal/tools/powerpointtool/rebuild_slide_from_outline.go` —
+    `powerpoint.rebuildSlideFromOutline`. Rewrites the title and/or body
+    bullets of an existing slide in one `PowerPoint.run`. Identifies title vs
+    body shape by placeholder name conventions
+    (`title*` / `subtitle*` → title; `content*` / `body*` / `placeholder*`
+    → body), falling back to the first / second shape when no naming match
+    exists. Out-of-range slide index throws
+    `powerpoint_slide_out_of_range`.
+  - `internal/js/onenote_append_to_page.js` + `internal/tools/onenotetool/append_to_page.go`
+    — `onenote.appendToPage`. Appends `html` and/or a `bullets[]` outline to a
+    OneNote page (active by default; explicit `pageId` honored when
+    `getPageById` is available) in one call. Bullets are HTML-escaped + wrapped
+    in `<ul><li>` before being added as an outline.
+  - `internal/js/powerpoint_insert_text_table.js` *(new internal payload)* —
+    inserts a slide-level text-box shape with tab-separated rows; not exposed
+    as a top-level MCP tool, but used by `office.embed` as the PowerPoint
+    side. PowerPoint's Office.js surface lacks a true `addTable` as of API
+    1.5, so a `slide.shapes.addTextBox` with `\t`/`\n` formatting is the most
+    reliable shape-based fallback.
+  - `internal/tools/officetool/embed.go` + `internal/tools/officetool/register.go`
+    + `internal/tools/officetool/register_test.go` — `office.embed` cross-host
+    tool. Two sequential `env.Attach` + `executor.Run` calls in Go: read an
+    Excel range via `excel.readRange`, then insert the values onto a
+    PowerPoint slide via `powerpoint.insertTextTable`. Source/target
+    selectors are independent. Documents the limitation that both targets
+    must be reachable from the same CDP debug endpoint (cross-endpoint
+    embedding is out of scope for Phase A).
+  - `internal/tools/{exceltool,wordtool,outlooktool,powerpointtool,onenotetool}/register.go`
+    — `Register` extended to register the new workflow tool(s) alongside the
+    existing `RunScript()`.
+  - `internal/tools/*/register_test.go` — count assertions bumped to match
+    the new registrations (excel: 4, word: 2, outlook: 2, powerpoint: 2,
+    onenote: 2). The `TestEveryRunPayloadToolHasJSPayload` guard catches any
+    new Go tool whose JS payload is missing.
+  - `internal/mcp/registry.go` — `DefaultRegistry` now also calls
+    `officetool.Register(r)` so the cross-host surface ships by default.
+  - `internal/mcp/registry_test.go` — new
+    `TestDefaultRegistryIncludesCrossHostSurface` asserts at least one
+    `office.*` tool registers on the default shape.
+  - `README.md` — Features bullets reframed: per-host runScript + Phase A
+    workflow tools + cross-host orchestration. Tool Groups table rewritten to
+    enumerate every Phase A tool individually rather than counting prefixes.
+  - `CLAUDE.md` — Project section updated to list the Phase A workflow tools
+    and `office.embed` and to point at PLAN-workflow-surface.md for the
+    later-phase roadmap (B–E).
+
+### Removed
+
+- **Phase 0 of `PLAN-workflow-surface.md` — surface narrowing.**
+  The raw `cdp.*` tool surface (~411 generated methods, ~10.5K LOC)
+  and the host primitive tools (`excel.readRange`, `word.readBody`,
+  `outlook.getSubject`, …) are no longer registered as MCP tools.
+  Each host keeps a single `runScript` escape hatch; the rest will be
+  replaced by workflow-shaped tools in Phase A. Reasoning: the
+  primitive surface was SDK-shaped, not agent-shaped — LLMs perform
+  poorly when forced to compose 20 primitive calls and reason over
+  100k cells in tokens.
+  - `internal/tools/cdptool/` — deleted (package, generated tools,
+    naming/dangerous/binary tests).
+  - `cmd/gen-cdp-tools/` — deleted (CDP protocol JSON generator and
+    its drift/golden tests).
+  - `cmd/office-addin-mcp/main.go` — removed `--expose-raw-cdp`,
+    `--cdp-domains`, `--list-cdp-domains` flags, the
+    `OFFICE_ADDIN_MCP_EXPOSE_RAW_CDP` env var, `buildCDPSelection`,
+    and the `cdptool` import. `DefaultRegistry` is now called with no
+    arguments.
+  - `cmd/office-addin-mcp/main_test.go` — removed
+    `TestBuildCDPSelection_*` tests; non-CDP tests retained.
+  - `internal/mcp/registry.go` — removed `CDPSelection`; simplified
+    `DefaultRegistry` to take no arguments.
+  - `internal/mcp/registry_test.go` — replaced
+    `TestExposeRawCDPRegistersGenerated` and
+    `TestCDPDomainsFilterRegistersOnlyNamedDomains` with a single
+    `TestDefaultRegistryHasNoRawCDP` guard against accidental
+    reintroduction.
+  - `internal/tools/{exceltool,wordtool,outlooktool,powerpointtool,onenotetool}/register.go`
+    — narrowed `Register` to register only `RunScript()`. The primitive
+    constructors stay in their packages as reusable building blocks for
+    Phase A workflow tools but are not registered as MCP tools.
+  - `internal/tools/*/register_test.go` — count assertions updated to
+    expect 1 tool (`runScript`) per host.
+  - `README.md`, `CLAUDE.md` — updated tool group inventory and project
+    description to reflect the narrowed surface.
+
 ### Changed
 
 - **Multi-host F9 — `--launch-addin` flag (host-agnostic) with

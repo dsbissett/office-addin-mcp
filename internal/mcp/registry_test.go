@@ -5,14 +5,15 @@ import (
 	"testing"
 )
 
-// TestDefaultRegistryHidesRawCDP confirms the high-level surface ships
-// without any cdp.* tools when --expose-raw-cdp is off. Phase 6 contract:
-// agents see addin/pages/page/excel/interact only by default.
-func TestDefaultRegistryHidesRawCDP(t *testing.T) {
-	r := DefaultRegistry(CDPSelection{})
+// TestDefaultRegistryHasNoRawCDP confirms the high-level surface ships
+// without any cdp.* tools. The raw CDP surface was removed in Phase 0
+// of the workflow-surface plan; this guard catches accidental
+// reintroduction.
+func TestDefaultRegistryHasNoRawCDP(t *testing.T) {
+	r := DefaultRegistry()
 	for _, tl := range r.List() {
 		if strings.HasPrefix(tl.Name, "cdp.") {
-			t.Errorf("default registry leaked raw CDP tool %q; expected --expose-raw-cdp gate", tl.Name)
+			t.Errorf("registry leaked raw CDP tool %q; the cdp.* surface was removed in Phase 0", tl.Name)
 		}
 	}
 	if len(r.List()) == 0 {
@@ -20,33 +21,12 @@ func TestDefaultRegistryHidesRawCDP(t *testing.T) {
 	}
 }
 
-// TestExposeRawCDPRegistersGenerated confirms the generated cdp.* surface
-// shows up when ExposeRawCDP is true. We sample a couple of well-known names
-// rather than counting — counts will drift as the manifest evolves.
-func TestExposeRawCDPRegistersGenerated(t *testing.T) {
-	r := DefaultRegistry(CDPSelection{Enabled: true})
-	names := map[string]bool{}
-	for _, tl := range r.List() {
-		names[tl.Name] = true
-	}
-	for _, want := range []string{
-		"cdp.selectTarget",
-		"cdp.runtime.evaluate",
-		"cdp.target.getTargets",
-		"cdp.page.navigate",
-	} {
-		if !names[want] {
-			t.Errorf("expected %q registered when ExposeRawCDP=true", want)
-		}
-	}
-}
-
-// TestDefaultRegistryIncludesMultiHostSurface confirms that the host
-// packages added by the multi-host plan (Word, Outlook, PowerPoint,
-// OneNote) are registered alongside the existing Excel surface on the
-// default high-level registry — no flag required.
+// TestDefaultRegistryIncludesMultiHostSurface confirms each host package
+// (Excel, Word, Outlook, PowerPoint, OneNote) contributes at least one
+// tool to the default registry. After Phase 0 the only host tools are
+// the runScript escape hatches, so this asserts those still register.
 func TestDefaultRegistryIncludesMultiHostSurface(t *testing.T) {
-	r := DefaultRegistry(CDPSelection{})
+	r := DefaultRegistry()
 	counts := map[string]int{}
 	for _, tl := range r.List() {
 		switch {
@@ -69,40 +49,17 @@ func TestDefaultRegistryIncludesMultiHostSurface(t *testing.T) {
 	}
 }
 
-// TestCDPDomainsFilterRegistersOnlyNamedDomains confirms F7 behavior: a
-// non-empty Domains list registers only those domains' cdp.* tools (plus
-// cdp.selectTarget) and skips everything else.
-func TestCDPDomainsFilterRegistersOnlyNamedDomains(t *testing.T) {
-	r := DefaultRegistry(CDPSelection{Enabled: true, Domains: []string{"DOM", "Page"}})
-	var domNames, pageNames, animationNames, runtimeNames int
-	hasSelectTarget := false
+// TestDefaultRegistryIncludesCrossHostSurface confirms Phase A's cross-host
+// office.* workflow tools register by default.
+func TestDefaultRegistryIncludesCrossHostSurface(t *testing.T) {
+	r := DefaultRegistry()
+	count := 0
 	for _, tl := range r.List() {
-		switch {
-		case tl.Name == "cdp.selectTarget":
-			hasSelectTarget = true
-		case strings.HasPrefix(tl.Name, "cdp.dOM."):
-			domNames++
-		case strings.HasPrefix(tl.Name, "cdp.page."):
-			pageNames++
-		case strings.HasPrefix(tl.Name, "cdp.animation."):
-			animationNames++
-		case strings.HasPrefix(tl.Name, "cdp.runtime."):
-			runtimeNames++
+		if strings.HasPrefix(tl.Name, "office.") {
+			count++
 		}
 	}
-	if !hasSelectTarget {
-		t.Error("cdp.selectTarget missing; cache primer should always register when Enabled=true")
-	}
-	if domNames == 0 {
-		t.Error("DOM domain produced no cdp.dOM.* tools")
-	}
-	if pageNames == 0 {
-		t.Error("Page domain produced no cdp.page.* tools")
-	}
-	if animationNames != 0 {
-		t.Errorf("Animation should be filtered out; got %d tools", animationNames)
-	}
-	if runtimeNames != 0 {
-		t.Errorf("Runtime should be filtered out; got %d tools", runtimeNames)
+	if count == 0 {
+		t.Errorf("expected at least one office.* cross-host tool registered by default; got 0")
 	}
 }
