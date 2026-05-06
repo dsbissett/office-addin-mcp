@@ -7,6 +7,7 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/doccache"
+	"github.com/dsbissett/office-addin-mcp/internal/recorder"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
@@ -161,6 +162,15 @@ type RunEnv struct {
 	// methods — discover/query tools can call DocCache.Get/Put unconditionally
 	// even when --no-doccache is set (Open returns a disabled store).
 	DocCache *doccache.Store
+
+	// Recording is a callback to append the current tool call to an active
+	// recording session. Nil when not recording; tools call unconditionally
+	// to opt in to macro capture. Signature: (tool string, params json.RawMessage) error.
+	Recording func(tool string, params []byte) error
+
+	// Recorder is the macro recording store. Nil-safe; macro tools use it to
+	// start/stop recording and manage macros.
+	Recorder *recorder.Store
 }
 
 // ClassifyCDPErr maps a low-level CDP/transport error to a uniform Result.

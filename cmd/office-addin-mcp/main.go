@@ -16,6 +16,7 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/doccache"
 	"github.com/dsbissett/office-addin-mcp/internal/launch"
 	mcpserver "github.com/dsbissett/office-addin-mcp/internal/mcp"
+	"github.com/dsbissett/office-addin-mcp/internal/recorder"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
@@ -104,6 +105,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 	}
 
+	// Create the recorder for macro recording/playback.
+	var rec *recorder.Store
+	if macroDir, err := recorder.New(recorder.DefaultDir()); err == nil {
+		rec = macroDir
+	} else {
+		slog.Warn("macro recording unavailable", "error", err)
+	}
+
 	srv := mcpserver.NewServer(mcpserver.Options{
 		Name:           "office-addin-mcp",
 		Version:        version,
@@ -112,6 +121,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Registry:       mcpserver.DefaultRegistry(),
 		Sessions:       sessMgr,
 		DocCache:       doccache.Open("", *noDocCache),
+		Recorder:       rec,
 	})
 
 	if err := srv.Run(ctx); err != nil {

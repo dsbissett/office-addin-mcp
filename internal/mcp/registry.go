@@ -7,6 +7,7 @@ import (
 	"github.com/dsbissett/office-addin-mcp/internal/tools/inspecttool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/interacttool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/lifecycletool"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/macrotool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/officetool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/onenotetool"
 	"github.com/dsbissett/office-addin-mcp/internal/tools/outlooktool"
@@ -33,5 +34,6 @@ func DefaultRegistry() *tools.Registry {
 	powerpointtool.Register(r)
 	onenotetool.Register(r)
 	officetool.Register(r)
+	macrotool.Register(r)
 	return r
 }

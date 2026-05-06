@@ -7,6 +7,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -14,9 +15,11 @@ import (
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/doccache"
+	"github.com/dsbissett/office-addin-mcp/internal/recorder"
 	"github.com/dsbissett/office-addin-mcp/internal/resources"
 	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
+	"github.com/dsbissett/office-addin-mcp/internal/tools/macrotool"
 	"github.com/dsbissett/office-addin-mcp/internal/webview2"
 )
 
@@ -40,6 +43,8 @@ type Options struct {
 	// DocCache is the persistent document discovery cache. nil falls back to
 	// a default-path enabled store; pass doccache.Open("", true) to disable.
 	DocCache *doccache.Store
+	// Recorder is the macro recording store. nil disables macro recording.
+	Recorder *recorder.Store
 }
 
 // Server wraps an SDK *mcp.Server bound to the office-addin-mcp dispatcher.
@@ -88,6 +93,7 @@ func NewServer(opts Options) *Server {
 		Manifest:       s.currentManifest,
 		SetManifest:    s.setManifest,
 		DocCache:       opts.DocCache,
+		Recorder:       opts.Recorder,
 	}
 
 	// Create the resource provider.
@@ -121,6 +127,23 @@ func NewServer(opts Options) *Server {
 	// Register tools.
 	for _, t := range opts.Registry.List() {
 		s.registerTool(t)
+	}
+
+	// Load and register macro tools if the recorder is available.
+	if opts.Recorder != nil {
+		if _, err := opts.Recorder.LoadAll(); err == nil {
+			// For each loaded macro, create and register a replay tool.
+			for _, macroName := range opts.Recorder.List() {
+				macro, _ := opts.Recorder.Get(macroName)
+				if macro != nil {
+					// Create a replay tool that uses the dispatcher to execute recorded steps.
+					macroTool := createMacroReplayTool(macro, s.disp)
+					if err := opts.Registry.Register(macroTool); err == nil {
+						s.registerTool(&macroTool)
+					}
+				}
+			}
+		}
 	}
 
 	// Register resources.
@@ -175,3 +198,25 @@ func (s *Server) Run(ctx context.Context) error {
 // SDKServer exposes the underlying SDK server for tests that connect via
 // in-memory transports.
 func (s *Server) SDKServer() *sdk.Server { return s.sdk }
+
+// createMacroReplayTool creates a replay tool for a recorded macro using the
+// dispatcher to execute each recorded step.
+func createMacroReplayTool(macro *recorder.Macro, disp *tools.Dispatcher) tools.Tool {
+	runner := func(ctx context.Context, toolName string, params json.RawMessage, env *tools.RunEnv) tools.Result {
+		// Dispatch the recorded tool call through the normal tool pipeline.
+		req := tools.Request{
+			Tool:      toolName,
+			Params:    params,
+			SessionID: env.Diag.SessionID,
+		}
+		if env.Endpoint.WSEndpoint != "" || env.Endpoint.BrowserURL != "" {
+			req.Endpoint = env.Endpoint
+		}
+		envelope := disp.Dispatch(ctx, req)
+		if envelope.OK {
+			return tools.OK(envelope.Data)
+		}
+		return tools.Result{Err: envelope.Error}
+	}
+	return macrotool.MakeMacroTool(macro, runner)
+}
