@@ -70,6 +70,8 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 			return tools.Fail(tools.CategoryInternal, "getcwd_failed", err.Error(), false)
 		}
 	}
+	env.Logf("info", "detecting add-in project in %s", cwd)
+	env.ReportProgress(0, 0, "Detecting add-in project")
 	project, err := launch.DetectAddin(cwd)
 	if err != nil {
 		return tools.FailWithDetails(tools.CategoryNotFound, "addin_not_found", err.Error(), false, map[string]any{
@@ -77,18 +79,34 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 		})
 	}
 
+	// Stream each launch phase as a progress notification. total is left at 0
+	// (unknown) since the phase count varies with skipDevServer / reuse; the
+	// monotonic step counter still lets clients show forward motion.
+	var step float64
 	res, err := launch.LaunchExcel(ctx, project, launch.LaunchOptions{
 		Port:             p.Port,
 		Timeout:          time.Duration(p.TimeoutMs) * time.Millisecond,
 		DevServerTimeout: time.Duration(p.DevServerTimeoutMs) * time.Millisecond,
 		SkipDevServer:    p.SkipDevServer,
+		Progress: func(msg string) {
+			step++
+			env.Logf("info", "%s", msg)
+			env.ReportProgress(step, 0, msg)
+		},
 	})
 	if err != nil {
 		return launchErrToResult(err)
 	}
+	env.ReportProgress(step+1, 0, "Excel ready")
 
 	if env.SetEndpoint != nil {
 		env.SetEndpoint(webview2.Config{BrowserURL: res.CDPURL})
+	}
+	// Explicit launch is intent to start fresh: clear any pooled session whose
+	// reconnect budget was burned dialing the old (now replaced) Excel, so the
+	// next page op dials the new endpoint instead of failing budget-exhausted.
+	if env.ResetSessions != nil {
+		env.ResetSessions()
 	}
 	if env.SetManifest != nil {
 		// Best-effort manifest parse — a launch can succeed even if our

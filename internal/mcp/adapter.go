@@ -44,13 +44,47 @@ func (s *Server) makeHandler(t *tools.Tool) sdk.ToolHandler {
 	hasOutputSchema := len(t.OutputSchema) > 0
 	toolName := t.Name
 	return func(ctx context.Context, req *sdk.CallToolRequest) (*sdk.CallToolResult, error) {
-		params := req.Params.Arguments
-		env := s.disp.Dispatch(ctx, tools.Request{
+		treq := tools.Request{
 			Tool:     toolName,
-			Params:   params,
+			Params:   req.Params.Arguments,
 			Endpoint: s.currentEndpoint(),
-		})
+			Log:      logSink(ctx, req.Session, toolName),
+		}
+		// Progress notifications only flow when the client opted in by sending
+		// a progressToken with the call. Skip the sink otherwise so tools that
+		// loop over ReportProgress stay silent for non-participating clients.
+		if token := req.Params.GetProgressToken(); token != nil {
+			treq.Progress = progressSink(ctx, req.Session, token)
+		}
+		env := s.disp.Dispatch(ctx, treq)
 		return envelopeToResult(env, hasOutputSchema), nil
+	}
+}
+
+// progressSink adapts the tools-layer progress callback onto the SDK session's
+// NotifyProgress. Errors are ignored: a dropped progress note must never fail
+// the underlying tool call.
+func progressSink(ctx context.Context, sess *sdk.ServerSession, token any) func(current, total float64, message string) {
+	return func(current, total float64, message string) {
+		_ = sess.NotifyProgress(ctx, &sdk.ProgressNotificationParams{
+			ProgressToken: token,
+			Progress:      current,
+			Total:         total,
+			Message:       message,
+		})
+	}
+}
+
+// logSink adapts the tools-layer log callback onto the SDK session's Log. The
+// SDK no-ops messages below the client's configured level and before any level
+// is set, so this is always safe to wire. Errors are ignored.
+func logSink(ctx context.Context, sess *sdk.ServerSession, logger string) func(level, message string) {
+	return func(level, message string) {
+		_ = sess.Log(ctx, &sdk.LoggingMessageParams{
+			Level:  sdk.LoggingLevel(level),
+			Logger: logger,
+			Data:   message,
+		})
 	}
 }
 

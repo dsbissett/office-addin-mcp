@@ -253,6 +253,47 @@ func TestManager_DropClosesSession(t *testing.T) {
 	}
 }
 
+func TestManager_DropAllResetsReconnectBudget(t *testing.T) {
+	// Reproduce the relaunch scenario: page ops against a dead endpoint burn
+	// the reconnect budget; DropAll (called by addin.launch) must clear it so
+	// the next acquire against the now-live endpoint succeeds.
+	m := NewManager(Config{ReconnectMax: 3, ReconnectWindow: 60 * time.Second})
+	defer m.Close()
+
+	dead := webview2.Config{BrowserURL: "http://127.0.0.1:1"}
+	s := m.Get("default")
+	for i := 0; i < 3; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		_, _, _ = s.Acquire(ctx, dead)
+		cancel()
+	}
+	// Budget now exhausted on the original session.
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+	if _, _, err := s.Acquire(ctx, dead); !errors.Is(err, ErrReconnectBudgetExhausted) {
+		cancel()
+		t.Fatalf("expected budget exhausted before DropAll, got %v", err)
+	}
+	cancel()
+
+	// Simulate the relaunch: a live endpoint is now up, addin.launch calls DropAll.
+	fb := newFakeBrowser(t)
+	defer fb.Close()
+	m.DropAll()
+
+	// A fresh session must be handed out, and it must be able to dial.
+	s2 := m.Get("default")
+	if s2 == s {
+		t.Fatal("DropAll should have removed the session so Get returns a fresh one")
+	}
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel2()
+	_, release, err := s2.Acquire(ctx2, webview2.Config{BrowserURL: fb.URL})
+	if err != nil {
+		t.Fatalf("acquire after DropAll should succeed with a reset budget, got %v", err)
+	}
+	release()
+}
+
 func TestSession_DefaultSelection(t *testing.T) {
 	s := &Session{id: "default", cfg: Config{}.withDefaults()}
 	if _, ok := s.DefaultSelection(); ok {

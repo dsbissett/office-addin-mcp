@@ -45,7 +45,7 @@ func EnsureRunning() tools.Tool {
 	return tools.Tool{
 		Name:        "addin.ensureRunning",
 		Title:       "Ensure Excel Is Running",
-		Description: "Probe the WebView2 CDP endpoint and, if unreachable, detect+launch the project under cwd. Returns once the endpoint is reachable. Combines addin.detect + addin.launch into one idempotent call so the agent can recover from a closed Excel without a multi-step dance.",
+		Description: "START HERE before any page.*, inspect.*, excel.*, or other automation. Probe the WebView2 CDP endpoint and, if unreachable, detect+launch the project under cwd. Returns once the endpoint is reachable. Combines addin.detect + addin.launch into one idempotent call so the agent can recover from a closed Excel without a multi-step dance. Safe to call repeatedly — it no-ops when Excel is already reachable.",
 		Schema:      json.RawMessage(ensureRunningSchema),
 		Annotations: &tools.Annotations{
 			IdempotentHint: true,
@@ -71,16 +71,28 @@ func runEnsureRunning(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 		}
 	}
 
+	env.Logf("info", "detecting add-in project in %s", cwd)
+	env.ReportProgress(0, 0, "Detecting add-in project")
 	project, detectErr := launch.DetectAddin(cwd)
 	// Detection failure isn't fatal yet — if Excel is already running with the
 	// debug port we don't need a manifest. Hold onto the error in case the
 	// probe also fails.
 
+	// Stream each check as a progress notification. total stays 0 (unknown):
+	// the probe may short-circuit ("preexisting") or fall through to a launch
+	// with a variable number of phases. The monotonic step counter still gives
+	// the client forward motion to render.
+	var step float64
 	res, source, err := launch.LaunchIfNeeded(ctx, project, launch.LaunchOptions{
 		Port:             p.Port,
 		Timeout:          time.Duration(p.TimeoutMs) * time.Millisecond,
 		DevServerTimeout: time.Duration(p.DevServerTimeoutMs) * time.Millisecond,
 		SkipDevServer:    p.SkipDevServer,
+		Progress: func(msg string) {
+			step++
+			env.Logf("info", "%s", msg)
+			env.ReportProgress(step, 0, msg)
+		},
 	})
 	if err != nil {
 		// LaunchIfNeeded only reaches LaunchExcel when project != nil, so a
@@ -106,8 +118,16 @@ func runEnsureRunning(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 		return launchErrToResult(err)
 	}
 
+	env.ReportProgress(step+1, 0, "Excel reachable")
 	if env.SetEndpoint != nil {
 		env.SetEndpoint(webview2.Config{BrowserURL: res.CDPURL})
+	}
+	// A fresh spawn means the old Excel is gone; drop pooled sessions so a
+	// reconnect budget burned against the dead endpoint doesn't block the next
+	// page op. A "preexisting" hit means the connection was fine all along, so
+	// leave sessions untouched.
+	if source == "launched" && env.ResetSessions != nil {
+		env.ResetSessions()
 	}
 	if env.SetManifest != nil && res.ManifestPath != "" {
 		if m, perr := addin.ParseManifest(res.ManifestPath); perr == nil {
@@ -120,6 +140,7 @@ func runEnsureRunning(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 		"cdpUrl":       res.CDPURL,
 		"manifestPath": res.ManifestPath,
 		"pid":          res.PID,
+		"cdpVerified":  res.CDPVerified,
 	}
 	if res.DevServerPort > 0 {
 		out["devServerPort"] = res.DevServerPort

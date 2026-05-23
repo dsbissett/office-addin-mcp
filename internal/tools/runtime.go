@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
 	"github.com/dsbissett/office-addin-mcp/internal/cdp"
@@ -18,6 +19,15 @@ type Request struct {
 	Params    []byte // raw JSON bytes for the params object
 	Endpoint  webview2.Config
 	SessionID string // Phase 5 user session id; empty resolves to "default"
+
+	// Progress and Log are per-call client-notification sinks. The MCP stdio
+	// adapter wires these from the call's progressToken and the client's
+	// logging capability so long-running tools can stream status. Both are nil
+	// on the CLI one-shot path, in the daemon HTTP path, and in macro replay
+	// sub-dispatches — tools must treat them as optional. The dispatcher copies
+	// them onto RunEnv; tools call via RunEnv.ReportProgress / RunEnv.Logf.
+	Progress func(current, total float64, message string)
+	Log      func(level, message string)
 }
 
 // Result is what a tool's Run function returns. Exactly one of Data/Err is set.
@@ -117,6 +127,13 @@ type RunEnv struct {
 	// only when present.
 	SetEndpoint func(webview2.Config)
 
+	// ResetSessions drops every pooled session, clearing dead connections and
+	// reconnect budgets. Lifecycle tools (addin.launch, addin.ensureRunning)
+	// call this after a fresh launch so a budget exhausted by failed dials
+	// against the old Excel doesn't block the first call to the new one.
+	// Nil-safe; tools should call only when present.
+	ResetSessions func()
+
 	// Manifest returns the parsed manifest of the active add-in launch, or
 	// nil if no manifest is loaded. Tools that classify CDP targets by
 	// surface (taskpane / dialog / cf-runtime) consult this. Always nil-safe.
@@ -171,6 +188,36 @@ type RunEnv struct {
 	// Recorder is the macro recording store. Nil-safe; macro tools use it to
 	// start/stop recording and manage macros.
 	Recorder *recorder.Store
+
+	// Progress, when non-nil, emits an incremental progress notification to the
+	// client for a long-running call. current/total are caller-defined units;
+	// total 0 means unknown (progress still increments). Nil when the client
+	// did not supply a progressToken. Tools should call ReportProgress, which
+	// no-ops on nil, rather than this field directly.
+	Progress func(current, total float64, message string)
+
+	// Log, when non-nil, emits a structured log line to the client. Safe to
+	// call unconditionally; the MCP layer drops messages below the client's
+	// configured level and before any level is set. Nil outside the MCP stdio
+	// server. Tools should call Logf, which no-ops on nil.
+	Log func(level, message string)
+}
+
+// ReportProgress emits a progress notification when a sink is wired, and is a
+// no-op otherwise. total 0 signals an unknown total. Safe on a nil RunEnv.
+func (e *RunEnv) ReportProgress(current, total float64, message string) {
+	if e != nil && e.Progress != nil {
+		e.Progress(current, total, message)
+	}
+}
+
+// Logf emits a client-facing log line at the given level ("debug", "info",
+// "warning", "error") when a sink is wired, and is a no-op otherwise. Safe on
+// a nil RunEnv.
+func (e *RunEnv) Logf(level, format string, args ...any) {
+	if e != nil && e.Log != nil {
+		e.Log(level, fmt.Sprintf(format, args...))
+	}
 }
 
 // ClassifyCDPErr maps a low-level CDP/transport error to a uniform Result.

@@ -28,8 +28,13 @@ func MakeMacroTool(macro *recorder.Macro, runner func(context.Context, string, j
 		Schema:      schema,
 		NoSession:   false, // Replay tools need sessions to execute recorded calls
 		Run: func(ctx context.Context, params json.RawMessage, env *tools.RunEnv) tools.Result {
+			total := len(macro.Entries)
 			// Replay each recorded entry in sequence.
 			for i, entry := range macro.Entries {
+				env.ReportProgress(float64(i), float64(total),
+					fmt.Sprintf("step %d/%d: %s", i+1, total, entry.Tool))
+				env.Logf("info", "replay %s step %d/%d: %s", macro.Name, i+1, total, entry.Tool)
+
 				// Marshal the entry params back to JSON.
 				entryParams, err := json.Marshal(entry.Params)
 				if err != nil {
@@ -68,6 +73,7 @@ func MakeMacroTool(macro *recorder.Macro, runner func(context.Context, string, j
 			}
 
 			// All steps completed successfully.
+			env.ReportProgress(float64(total), float64(total), "macro complete")
 			return tools.OKWithSummary(
 				fmt.Sprintf("Macro completed: %s (%d steps)", macro.Name, len(macro.Entries)),
 				map[string]any{

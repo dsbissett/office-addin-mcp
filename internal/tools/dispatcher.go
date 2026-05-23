@@ -49,6 +49,16 @@ type Dispatcher struct {
 	// Recorder is the macro recording store. Wired into RunEnv.Recording.
 	// Nil when recording is not available.
 	Recorder *recorder.Store
+
+	// Recover, when set, attempts to repair a dead CDP connection after
+	// session.Acquire fails with session.ErrDialFailed. It relaunches the
+	// add-in this server previously started (stop → fresh launch), resets the
+	// session pool, and returns the now-live endpoint. It must self-gate:
+	// return an error when recovery is impossible or inappropriate (no tracked
+	// launch, or the user attached to an external endpoint). Only the
+	// persistent MCP server sets this; one-shot/CLI dispatch leaves it nil so
+	// no surprise process spawns happen there.
+	Recover func(ctx context.Context) (webview2.Config, error)
 }
 
 // NewDispatcher builds a Dispatcher.
@@ -121,6 +131,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 			SetManifest:    d.SetManifest,
 			DocCache:       d.DocCache,
 			Recorder:       d.Recorder,
+			Progress:       req.Progress,
+			Log:            req.Log,
+		}
+		if d.Sessions != nil {
+			env.ResetSessions = d.Sessions.DropAll
 		}
 		if d.Recorder != nil {
 			env.Recording = func(tool string, params []byte) error {
@@ -145,7 +160,27 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 
 	conn, release, err := sess.Acquire(ctx, req.Endpoint)
 	if err != nil {
-		return finalize(diag, start, 0, Result{Err: classifyAcquireErr(err, req.Endpoint)})
+		// Self-healing: a dial failure usually means the Excel this server
+		// launched was closed. Try one automatic stop+relaunch, then re-acquire
+		// against the fresh endpoint. Recovery resets the session pool, so the
+		// retry starts with a clean reconnect budget (recovery launches never
+		// consumed it — they use HTTP probes, not session dials).
+		if d.Recover != nil && errors.Is(err, session.ErrDialFailed) {
+			if newEP, rerr := d.Recover(ctx); rerr == nil {
+				slog.Warn("dispatch.autorecover", "request_id", requestID, "tool", req.Tool, "endpoint", newEP.BrowserURL)
+				if req.Log != nil {
+					req.Log("warning", "CDP connection was dead; auto-relaunched the add-in and retried.")
+				}
+				req.Endpoint = newEP
+				sess = d.Sessions.Get(req.SessionID)
+				conn, release, err = sess.Acquire(ctx, newEP)
+			} else {
+				slog.Debug("dispatch.autorecover_skipped", "request_id", requestID, "reason", rerr)
+			}
+		}
+		if err != nil {
+			return finalize(diag, start, 0, Result{Err: classifyAcquireErr(err, req.Endpoint)})
+		}
 	}
 	defer release()
 
@@ -166,6 +201,11 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	env.SetManifest = d.SetManifest
 	env.DocCache = d.DocCache
 	env.Recorder = d.Recorder
+	env.Progress = req.Progress
+	env.Log = req.Log
+	if d.Sessions != nil {
+		env.ResetSessions = d.Sessions.DropAll
+	}
 	res := tool.Run(ctx, rawParams, env)
 	if res.Err != nil && res.Err.Category == CategoryOfficeJS {
 		classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
@@ -203,13 +243,13 @@ func classifyAcquireErr(err error, ep webview2.Config) *EnvelopeError {
 
 	switch {
 	case errors.Is(err, session.ErrReconnectBudgetExhausted):
-		details["recoverableViaTool"] = "addin.launch"
+		details["recoverableViaTool"] = "addin.ensureRunning"
 		return &EnvelopeError{
 			Code:         "session_reconnect_budget_exhausted",
 			Message:      err.Error(),
 			Category:     CategoryConnection,
 			Retryable:    false,
-			RecoveryHint: "Reconnect budget (3 attempts per 60s) is exhausted. Excel may not be running with --remote-debugging-port=9222 — call addin.launch with the manifest, or wait 60 seconds and retry.",
+			RecoveryHint: "Reconnect budget (3 attempts per 60s) is exhausted. Excel may not be running with --remote-debugging-port=9222 — call addin.ensureRunning, or wait 60 seconds and retry.",
 			Details:      details,
 		}
 	case errors.Is(err, context.DeadlineExceeded):
@@ -218,17 +258,17 @@ func classifyAcquireErr(err error, ep webview2.Config) *EnvelopeError {
 			Message:      err.Error(),
 			Category:     CategoryTimeout,
 			Retryable:    true,
-			RecoveryHint: "Tool call timed out before the CDP connection was ready. Retry with a longer ctx deadline, or call addin.launch if Excel is not running.",
+			RecoveryHint: "Tool call timed out before the CDP connection was ready. Retry with a longer ctx deadline, or call addin.ensureRunning if Excel is not running.",
 			Details:      details,
 		}
 	case errors.Is(err, session.ErrDialFailed):
-		details["recoverableViaTool"] = "addin.launch"
+		details["recoverableViaTool"] = "addin.ensureRunning"
 		return &EnvelopeError{
 			Code:         "session_dial_failed",
 			Message:      err.Error(),
 			Category:     CategoryConnection,
 			Retryable:    true,
-			RecoveryHint: `Could not connect to the CDP endpoint. Confirm Excel is running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222", or call addin.launch.`,
+			RecoveryHint: `Could not connect to the CDP endpoint. Confirm Excel is running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222", or call addin.ensureRunning.`,
 			Details:      details,
 		}
 	}

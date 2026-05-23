@@ -1,6 +1,33 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-05-23
+
+### Added
+
+- **MCP progress and logging notifications.** `addin.launch`, `addin.ensureRunning`, and macro step replay each emit `$/progress` notifications at every phase boundary (dev-server start, sideload, CDP-ready wait, macro step execution) and `$/log` messages at info level. Clients that handle progress (Claude Code, etc.) display a live status line instead of a silent spinner during the ~60 s Excel startup sequence.
+  - `internal/tools/runtime.go` — added `RunEnv.ReportProgress(current, total, message)` and `RunEnv.Logf(level, format, args...)` helpers that fan out to the MCP session's `$/progress` and `logging/message` channels when `req.Progress` / `req.Log` are wired.
+  - `internal/mcp/adapter.go` — `makeHandler` threads `req.Progress` and `req.Log` callbacks from the SDK `ServerSession` into the dispatcher `Request`.
+  - `internal/tools/lifecycletool/launch.go`, `internal/tools/addintool/ensurerunning.go` — pass a `Progress` func into `LaunchOptions` that calls `env.ReportProgress`/`env.Logf` at each phase.
+  - `internal/tools/macrotool/replay.go` — calls `env.ReportProgress` before each recorded step.
+
+- **Self-healing CDP connection (auto-recovery).** When a tool call encounters a dead Excel connection (`session.ErrDialFailed`), the server automatically stops the stale sideload registration, relaunches Excel (including the dev server), resets the session pool, and retries the original operation transparently — no agent intervention required.
+  - `internal/mcp/server.go` — `recoverConnection` method: probes all tracked endpoints (1.5 s each); if all are dead, calls `launch.StopAll()` then `launch.LaunchExcel` on a **fresh 90-second context** (detached from the request context, which may have only seconds remaining after the dial failure); updates the server endpoint; drops sessions.
+  - `internal/tools/dispatcher.go` — `Dispatcher.Recover` field (`func(ctx) (webview2.Config, error)`) is called once on `ErrDialFailed`. On success the dispatcher retries `sess.Acquire` against the fresh endpoint with a clean reconnect budget. Recovery failures are silent to the agent (original error surfaces).
+  - `internal/mcp/server.go` — `recoverMu sync.Mutex` serialises concurrent recovery so a burst of parallel failures doesn't spawn multiple Excel processes.
+  - Recovery only fires when the server owns the tracked launch (via `--launch-addin` or a prior `addin.launch`). External `--browser-url` endpoints are never disturbed.
+
+- **Process liveness check before reusing a tracked launch.** `LaunchExcel` previously returned the cached registry entry without verifying that Excel was still alive, causing `addin.launch` to report phantom success (same PID, no relaunch) after an unexpected shutdown.
+  - `internal/launch/liveness_windows.go` *(new)* — `processAlive(pid int) bool` uses `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` + `GetExitCodeProcess`; a process with exit code ≠ `STILL_ACTIVE` (259) is considered dead.
+  - `internal/launch/liveness_other.go` *(new)* — Unix fallback via `Signal(0)`.
+  - `internal/launch/launcher.go` — `LaunchExcel` now checks `processAlive(existing.PID) && ProbeCDPEndpoint(...).OK` before returning the cached record. On a liveness failure the function calls `existing.Stop()` (runs `office-addin-debugging stop`, kills the launcher, stops the dev server, clears the registry) then performs a genuine cold relaunch.
+
+### Changed
+
+- **Session pool reset on fresh launch.** `addin.launch` and `addin.ensureRunning` now call `env.ResetSessions()` (= `Sessions.DropAll`) after a successful relaunch, clearing any pooled session whose reconnect budget was exhausted against the old endpoint.
+
+- **Recovery hints now point to `addin.ensureRunning`.** `classifyAcquireErr` in the dispatcher and session-failure messages in `page.evaluate` updated `recoverableViaTool` and `recoveryHint` text from `addin.launch` to `addin.ensureRunning`, which is idempotent (probe-first) and the preferred manual-recovery entry point.
+
+- **`page.evaluate` description and error enrichment.** Tool description documents the `addin.ensureRunning` prerequisite; network-fetch and session-dial failures surface a structured `recoverableViaTool: "addin.ensureRunning"` detail key and a targeted recovery hint.
 
 ### Added
 

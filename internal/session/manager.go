@@ -65,6 +65,21 @@ func (m *Manager) Drop(id string) {
 	}
 }
 
+// DropAll removes and closes every session in the pool. The next Get for any
+// id creates a fresh Session with a clean reconnect budget and no dead
+// connection — this is how an explicit relaunch (addin.launch /
+// addin.ensureRunning) recovers from a budget exhausted by failed dials
+// against a now-replaced Excel. Does not stop the GC loop (use Close for that).
+func (m *Manager) DropAll() {
+	m.mu.Lock()
+	victims := m.sessions
+	m.sessions = map[string]*Session{}
+	m.mu.Unlock()
+	for _, s := range victims {
+		s.Close()
+	}
+}
+
 // Snapshot returns a list of session ids currently in the pool. Order is
 // undefined.
 func (m *Manager) Snapshot() []string {

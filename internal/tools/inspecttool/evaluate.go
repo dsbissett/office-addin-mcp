@@ -3,6 +3,7 @@ package inspecttool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	cdpproto "github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
@@ -39,7 +40,7 @@ type evaluateParams struct {
 func Evaluate() tools.Tool {
 	return tools.Tool{
 		Name:        "page.evaluate",
-		Description: "Run a JS expression in the active page (or the chosen target/surface) via Runtime.evaluate. Use as a controlled escape hatch when no higher-level tool fits.",
+		Description: "Run a JS expression in the active page (or the chosen target/surface) via Runtime.evaluate. Use as a controlled escape hatch when no higher-level tool fits. Requires the add-in to be running: call addin.ensureRunning first — otherwise this fails to attach, or the page's own fetch() calls return \"Failed to fetch\". When awaiting an async function, have it return a value so success can be confirmed (an undefined result is reported as a warning, not proof of success).",
 		Schema:      json.RawMessage(evaluateSchema),
 		Run:         runEvaluate,
 	}
@@ -57,7 +58,16 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 
 	att, err := env.Attach(ctx, makeSelector(p.TargetID, p.URLPattern, p.Surface))
 	if err != nil {
-		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
+		return tools.Result{
+			Err: &tools.EnvelopeError{
+				Code:         "attach_failed",
+				Message:      err.Error(),
+				Category:     tools.CategoryNotFound,
+				RecoveryHint: "Could not attach to a page target — the add-in is likely not running. Call addin.ensureRunning, then retry.",
+				Details:      map[string]any{"recoverableViaTool": "addin.ensureRunning"},
+			},
+			Summary: "Could not attach to a page target; call addin.ensureRunning first.",
+		}
 	}
 	res, err := att.Conn.Evaluate(ctx, att.SessionID, cdpproto.EvaluateParams{
 		Expression:    p.Expression,
@@ -69,13 +79,32 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		return tools.ClassifyCDPErr("evaluate_failed", err)
 	}
 	if res.ExceptionDetails != nil {
+		msg := res.ExceptionDetails.String()
+		// A "Failed to fetch" thrown by the evaluated script means the page
+		// reached the JS runtime fine but could not reach a (usually local)
+		// HTTP endpoint — the dev server or add-in backend is down. Translate
+		// the opaque stack trace into a directed action instead of surfacing it
+		// raw.
+		if isFetchFailure(msg) {
+			return tools.Result{
+				Err: &tools.EnvelopeError{
+					Code:         "fetch_failed",
+					Message:      msg,
+					Category:     tools.CategoryConnection,
+					Retryable:    true,
+					RecoveryHint: `The evaluated script failed to reach a local endpoint ("Failed to fetch"). The dev server or add-in backend may not be running — call addin.ensureRunning and retry.`,
+					Details:      map[string]any{"recoverableViaTool": "addin.ensureRunning"},
+				},
+				Summary: "JS fetch failed to reach a local endpoint; call addin.ensureRunning and retry.",
+			}
+		}
 		return tools.Result{
 			Err: &tools.EnvelopeError{
 				Code:     "evaluation_exception",
-				Message:  res.ExceptionDetails.String(),
+				Message:  msg,
 				Category: tools.CategoryProtocol,
 			},
-			Summary: "JS evaluation threw: " + res.ExceptionDetails.String(),
+			Summary: "JS evaluation threw: " + msg,
 		}
 	}
 	out := struct {
@@ -88,5 +117,25 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 		out.Value = res.Result.Value
 		out.Description = res.Result.Description
 	}
+	// An awaited promise that resolves to undefined is a frequent false
+	// positive: the call "succeeded" but produced no evidence it did the work.
+	// Flag it so the caller verifies rather than assuming success.
+	if p.AwaitPromise && out.Type == "undefined" {
+		return tools.OKWithSummary(
+			"Evaluated JS; the awaited promise resolved to undefined — this is not proof the operation succeeded. Have the script return a value, or verify with a follow-up read.",
+			out)
+	}
 	return tools.OKWithSummary("Evaluated JS; result type "+out.Type+".", out)
+}
+
+// isFetchFailure reports whether a thrown-exception string is a network-reach
+// failure (browser fetch/XHR could not connect), as opposed to an ordinary JS
+// error. Covers the common Chromium/WebView2 wordings.
+func isFetchFailure(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "failed to fetch") ||
+		strings.Contains(m, "networkerror") ||
+		strings.Contains(m, "err_connection_refused") ||
+		strings.Contains(m, "err_connection_reset") ||
+		strings.Contains(m, "load failed")
 }

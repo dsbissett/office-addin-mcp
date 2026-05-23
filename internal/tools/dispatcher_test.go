@@ -150,6 +150,73 @@ func TestDispatch_DiagnosticsAlwaysSet(t *testing.T) {
 	}
 }
 
+func TestDispatch_AutoRecoverOnDialFailed(t *testing.T) {
+	reg := NewRegistry()
+	reg.MustRegister(Tool{
+		Name:   "sess.op",
+		Schema: json.RawMessage(`{"type":"object"}`),
+		Run:    func(_ context.Context, _ json.RawMessage, _ *RunEnv) Result { return OK(nil) },
+	})
+	dead := webview2.Config{BrowserURL: "http://127.0.0.1:1"}
+
+	t.Run("recover invoked once; failure surfaces dial_failed", func(t *testing.T) {
+		mgr := session.NewManager(session.Config{ReconnectMax: 3, ReconnectWindow: time.Minute})
+		defer mgr.Close()
+		calls := 0
+		d := &Dispatcher{
+			Registry: reg,
+			Sessions: mgr,
+			Recover: func(context.Context) (webview2.Config, error) {
+				calls++
+				return webview2.Config{}, errors.New("recovery unavailable")
+			},
+		}
+		env := d.Dispatch(context.Background(), Request{Tool: "sess.op", Endpoint: dead})
+		if env.OK {
+			t.Fatal("expected failure when recovery can't help")
+		}
+		if env.Error.Code != "session_dial_failed" {
+			t.Errorf("code=%q want session_dial_failed", env.Error.Code)
+		}
+		if calls != 1 {
+			t.Errorf("Recover called %d times, want exactly 1", calls)
+		}
+	})
+
+	t.Run("retry happens once and does not loop", func(t *testing.T) {
+		mgr := session.NewManager(session.Config{ReconnectMax: 3, ReconnectWindow: time.Minute})
+		defer mgr.Close()
+		calls := 0
+		d := &Dispatcher{
+			Registry: reg,
+			Sessions: mgr,
+			// Return another dead endpoint: the retry will fail too, but the
+			// dispatcher must attempt recovery only once (no infinite loop).
+			Recover: func(context.Context) (webview2.Config, error) {
+				calls++
+				return webview2.Config{BrowserURL: "http://127.0.0.1:2"}, nil
+			},
+		}
+		env := d.Dispatch(context.Background(), Request{Tool: "sess.op", Endpoint: dead})
+		if env.OK {
+			t.Fatal("expected failure (retry endpoint also dead)")
+		}
+		if calls != 1 {
+			t.Errorf("Recover called %d times, want exactly 1", calls)
+		}
+	})
+
+	t.Run("no Recover hook leaves behavior unchanged", func(t *testing.T) {
+		mgr := session.NewManager(session.Config{ReconnectMax: 3, ReconnectWindow: time.Minute})
+		defer mgr.Close()
+		d := &Dispatcher{Registry: reg, Sessions: mgr}
+		env := d.Dispatch(context.Background(), Request{Tool: "sess.op", Endpoint: dead})
+		if env.OK || env.Error.Code != "session_dial_failed" {
+			t.Errorf("want session_dial_failed, got ok=%v err=%+v", env.OK, env.Error)
+		}
+	})
+}
+
 func TestEnvelopeErrorRecoveryHints(t *testing.T) {
 	ep := webview2.Config{BrowserURL: "http://127.0.0.1:9222"}
 	cases := []struct {
@@ -166,7 +233,7 @@ func TestEnvelopeErrorRecoveryHints(t *testing.T) {
 			wantCode:       "session_reconnect_budget_exhausted",
 			wantCategory:   CategoryConnection,
 			wantHintSubstr: "Reconnect budget",
-			wantTool:       "addin.launch",
+			wantTool:       "addin.ensureRunning",
 		},
 		{
 			name:           "dial_failed",
@@ -174,7 +241,7 @@ func TestEnvelopeErrorRecoveryHints(t *testing.T) {
 			wantCode:       "session_dial_failed",
 			wantCategory:   CategoryConnection,
 			wantHintSubstr: "WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS",
-			wantTool:       "addin.launch",
+			wantTool:       "addin.ensureRunning",
 		},
 		{
 			name:           "timeout",

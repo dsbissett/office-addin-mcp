@@ -31,6 +31,10 @@ type LaunchOptions struct {
 	Timeout          time.Duration
 	DevServerTimeout time.Duration
 	SkipDevServer    bool
+	// Progress, when non-nil, is called with a short human-readable status
+	// line at each launch phase boundary (dev server, sideload, CDP wait).
+	// Lets callers stream progress during the long internal waits. Nil-safe.
+	Progress func(message string)
 }
 
 // LaunchResult is what the caller gets back after a successful sideload.
@@ -40,6 +44,15 @@ type LaunchResult struct {
 	ManifestPath  string   `json:"manifestPath"`
 	DevServerPort int      `json:"devServerPort,omitempty"`
 	Output        []string `json:"output,omitempty"`
+	// Source records how the endpoint was obtained: "launched" (a fresh
+	// office-addin-debugging spawn), "reused" (a still-alive tracked launch),
+	// or "preexisting" (an unrelated Excel already on the port, via
+	// LaunchIfNeeded). Lets callers tell a real spawn from a no-op.
+	Source string `json:"source,omitempty"`
+	// CDPVerified is true when a live /json/version probe confirmed the CDP
+	// endpoint actually responded — i.e. this is not a phantom success built
+	// from a stale tracked-launch record.
+	CDPVerified bool `json:"cdpVerified"`
 }
 
 // LaunchError carries a coarse machine-readable reason plus captured child
@@ -80,12 +93,35 @@ func LaunchExcel(ctx context.Context, project *Project, opts LaunchOptions) (*La
 	if runtime.GOOS != "windows" {
 		return nil, &LaunchError{Reason: ReasonUnsupportedPlatform, Message: "launch: WebView2 sideloading is Windows-only"}
 	}
+	progress := func(msg string) {
+		if opts.Progress != nil {
+			opts.Progress(msg)
+		}
+	}
 	if existing, ok := defaultRegistry.lookup(project.ManifestPath); ok {
-		return &LaunchResult{
-			PID:          existing.PID,
-			CDPURL:       existing.CDPURL,
-			ManifestPath: project.ManifestPath,
-		}, nil
+		// Only reuse the tracked launch if the process is alive AND its CDP
+		// endpoint responds. After a manual Excel shutdown the registry still
+		// holds the old record; returning it blind reports phantom success and
+		// never relaunches (the bug behind "called launch but couldn't
+		// connect"). The PID check fails fast; the /json/version probe also
+		// catches an alive-but-wedged WebView2.
+		if processAlive(existing.PID) && ProbeCDPEndpoint(ctx, existing.CDPURL, cdpProbeTimeout).OK {
+			progress("Reusing already-launched Excel")
+			return &LaunchResult{
+				PID:          existing.PID,
+				CDPURL:       existing.CDPURL,
+				ManifestPath: project.ManifestPath,
+				Source:       "reused",
+				CDPVerified:  true,
+			}, nil
+		}
+		// Stale record: Excel is gone. A bare registry delete is NOT enough —
+		// the previous office-addin-debugging sideload is still registered, so
+		// a fresh `start` would no-op and never reopen Excel. Run the full stop
+		// (office-addin-debugging stop + kill launcher + dev server + clear
+		// registry) so the relaunch below is a genuine cold start.
+		progress("Tracked Excel is no longer responding; clearing stale launch")
+		_ = existing.Stop()
 	}
 
 	port := opts.Port
@@ -110,11 +146,14 @@ func LaunchExcel(ctx context.Context, project *Project, opts LaunchOptions) (*La
 
 	var devServer *devServerHandle
 	if !opts.SkipDevServer {
+		progress("Starting dev server")
 		devServer, err = ensureDevServer(ctx, project, env, opts.DevServerTimeout)
 		if err != nil {
 			return nil, &LaunchError{Reason: ReasonDevServerNotReady, Message: err.Error()}
 		}
 	}
+
+	progress("Sideloading Excel")
 
 	cmd, err := buildLauncherCommand(launcherCmd, "start", project, env)
 	if err != nil {
@@ -130,6 +169,7 @@ func LaunchExcel(ctx context.Context, project *Project, opts LaunchOptions) (*La
 	pid := cmd.Process.Pid
 	exited := waitChild(cmd)
 
+	progress("Waiting for CDP endpoint")
 	if err := waitForCDPReady(ctx, cdpURL, timeout, exited, output); err != nil {
 		killProcess(cmd)
 		devServer.stop()
@@ -157,6 +197,8 @@ func LaunchExcel(ctx context.Context, project *Project, opts LaunchOptions) (*La
 		CDPURL:       cdpURL,
 		ManifestPath: project.ManifestPath,
 		Output:       output.snapshot(),
+		Source:       "launched",
+		CDPVerified:  true, // waitForCDPReady above confirmed /json responded
 	}
 	if devServer != nil {
 		res.DevServerPort = devServer.port
@@ -178,14 +220,22 @@ func LaunchIfNeeded(ctx context.Context, project *Project, opts LaunchOptions) (
 		port = defaultCDPPort
 	}
 	cdpURL := fmt.Sprintf("http://localhost:%d", port)
+	if opts.Progress != nil {
+		opts.Progress(fmt.Sprintf("Probing CDP endpoint at %s", cdpURL))
+	}
 	if probe := ProbeCDPEndpoint(ctx, cdpURL, cdpProbeTimeout); probe.OK {
 		manifestPath := ""
 		if project != nil {
 			manifestPath = project.ManifestPath
 		}
+		if opts.Progress != nil {
+			opts.Progress("Excel already reachable")
+		}
 		return &LaunchResult{
 			CDPURL:       cdpURL,
 			ManifestPath: manifestPath,
+			Source:       "preexisting",
+			CDPVerified:  true,
 		}, "preexisting", nil
 	}
 	if project == nil {
