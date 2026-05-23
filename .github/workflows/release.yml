@@ -34,15 +34,13 @@ jobs:
               fail=1
             fi
           done
-          # All checked-in npm/*/package.json versions must agree with mcp.json
+          # npm/main/package.json version must agree with mcp.json
           mcp_version=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('mcp.json')).version)")
-          for pkg in npm/main/package.json npm/win32-x64/package.json npm/darwin-x64/package.json npm/darwin-arm64/package.json npm/linux-x64/package.json npm/linux-arm64/package.json; do
-            v=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('$pkg')).version)")
-            if [ "$v" != "$mcp_version" ]; then
-              echo "::error file=$pkg::$pkg version $v disagrees with mcp.json $mcp_version"
-              fail=1
-            fi
-          done
+          v=$(node -e "process.stdout.write(JSON.parse(require('fs').readFileSync('npm/main/package.json')).version)")
+          if [ "$v" != "$mcp_version" ]; then
+            echo "::error file=npm/main/package.json::npm/main/package.json version $v disagrees with mcp.json $mcp_version"
+            fail=1
+          fi
           if [ "$fail" -ne 0 ]; then
             exit 1
           fi
@@ -71,23 +69,19 @@ jobs:
           go-version-file: 'go.mod'
           cache: true
 
-      - name: Build cross-platform binaries
+      - name: Build Windows binary
         if: steps.version-check.outputs.should_publish == 'true'
-        uses: goreleaser/goreleaser-action@v6
-        with:
-          version: latest
-          args: build --clean
+        run: |
+          GOOS=windows GOARCH=amd64 go build \
+            -ldflags="-s -w -X main.version=${{ steps.tag.outputs.version }}" \
+            -o npm/main/bin/office-addin-mcp-win32-x64.exe \
+            ./cmd/office-addin-mcp
 
       - name: Attest binary provenance
         if: steps.version-check.outputs.should_publish == 'true'
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: |
-            dist/office-addin-mcp_windows_amd64_v1/office-addin-mcp.exe
-            dist/office-addin-mcp_darwin_amd64_v1/office-addin-mcp
-            dist/office-addin-mcp_darwin_arm64_v8.0/office-addin-mcp
-            dist/office-addin-mcp_linux_amd64_v1/office-addin-mcp
-            dist/office-addin-mcp_linux_arm64_v8.0/office-addin-mcp
+          subject-path: npm/main/bin/office-addin-mcp-win32-x64.exe
 
       - uses: actions/setup-node@v4
         if: steps.version-check.outputs.should_publish == 'true'
@@ -95,40 +89,17 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - name: Stage binaries and set package versions
+      - name: Set package version
         if: steps.version-check.outputs.should_publish == 'true'
         run: |
           VERSION="${{ steps.tag.outputs.version }}"
-          update_pkg() {
-            node -e "
-              const fs = require('fs'), p = JSON.parse(fs.readFileSync('$1'));
-              p.version = '$VERSION';
-              if (p.optionalDependencies)
-                Object.keys(p.optionalDependencies).forEach(k => p.optionalDependencies[k] = '$VERSION');
-              fs.writeFileSync('$1', JSON.stringify(p, null, 2) + '\n');
-            "
-          }
-          for platform in win32-x64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
-            update_pkg "npm/$platform/package.json"
-          done
-          update_pkg npm/main/package.json
+          node -e "
+            const fs = require('fs'), p = JSON.parse(fs.readFileSync('npm/main/package.json'));
+            p.version = '$VERSION';
+            fs.writeFileSync('npm/main/package.json', JSON.stringify(p, null, 2) + '\n');
+          "
 
-          cp dist/office-addin-mcp_windows_amd64_v1/office-addin-mcp.exe npm/win32-x64/
-          cp dist/office-addin-mcp_darwin_amd64_v1/office-addin-mcp      npm/darwin-x64/
-          cp dist/office-addin-mcp_darwin_arm64_v8.0/office-addin-mcp    npm/darwin-arm64/
-          cp dist/office-addin-mcp_linux_amd64_v1/office-addin-mcp       npm/linux-x64/
-          cp dist/office-addin-mcp_linux_arm64_v8.0/office-addin-mcp     npm/linux-arm64/
-
-      - name: Publish platform packages to npm
-        if: steps.version-check.outputs.should_publish == 'true'
-        run: |
-          for platform in win32-x64 darwin-x64 darwin-arm64 linux-x64 linux-arm64; do
-            (cd "npm/$platform" && npm publish --access public)
-          done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - name: Publish main package to npm
+      - name: Publish to npm
         if: steps.version-check.outputs.should_publish == 'true'
         run: cd npm/main && npm publish --access public
         env:

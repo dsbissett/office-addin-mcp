@@ -1,30 +1,24 @@
 #!/usr/bin/env node
 "use strict";
+const fs = require("fs");
+const path = require("path");
 const { spawnSync } = require("child_process");
 
-const PLATFORMS = {
-  "win32-x64":    ["@dsbissett/office-addin-mcp-win32-x64",    "office-addin-mcp.exe"],
-  "darwin-x64":   ["@dsbissett/office-addin-mcp-darwin-x64",   "office-addin-mcp"],
-  "darwin-arm64": ["@dsbissett/office-addin-mcp-darwin-arm64", "office-addin-mcp"],
-  "linux-x64":    ["@dsbissett/office-addin-mcp-linux-x64",    "office-addin-mcp"],
-  "linux-arm64":  ["@dsbissett/office-addin-mcp-linux-arm64",  "office-addin-mcp"],
-};
-
 const key = `${process.platform}-${process.arch}`;
-const entry = PLATFORMS[key];
-if (!entry) {
-  process.stderr.write(`office-addin-mcp: unsupported platform ${key}\n`);
-  process.exit(1);
-}
+const ext = process.platform === "win32" ? ".exe" : "";
+const binPath = path.join(__dirname, `office-addin-mcp-${key}${ext}`);
 
-const [pkg, bin] = entry;
-let binPath;
-try {
-  binPath = require.resolve(`${pkg}/${bin}`);
-} catch {
-  process.stderr.write(`office-addin-mcp: platform package ${pkg} is not installed\n`);
-  process.exit(1);
+// Ensure executable bit is set (npm does not always preserve it on Unix).
+if (process.platform !== "win32") {
+  try { fs.chmodSync(binPath, 0o755); } catch {}
 }
 
 const result = spawnSync(binPath, process.argv.slice(2), { stdio: "inherit" });
+if (result.error) {
+  const msg = result.error.code === "ENOENT"
+    ? `unsupported platform ${key}`
+    : result.error.message;
+  process.stderr.write(`office-addin-mcp: ${msg}\n`);
+  process.exit(1);
+}
 process.exit(result.status ?? 1);

@@ -24,12 +24,5 @@
   },
   "files": [
     "bin"
-  ],
-  "optionalDependencies": {
-    "@dsbissett/office-addin-mcp-win32-x64": "0.8.0",
-    "@dsbissett/office-addin-mcp-darwin-x64": "0.8.0",
-    "@dsbissett/office-addin-mcp-darwin-arm64": "0.8.0",
-    "@dsbissett/office-addin-mcp-linux-x64": "0.8.0",
-    "@dsbissett/office-addin-mcp-linux-arm64": "0.8.0"
-  }
+  ]
 }
