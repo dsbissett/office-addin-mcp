@@ -59,20 +59,9 @@ func runListTargets(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		manifest = env.Manifest()
 	}
 	classified := addin.ClassifyTargets(targets, manifest)
-
-	out := classified[:0]
-	for _, c := range classified {
-		if !p.IncludeInternal && tools.IsInternalURL(c.URL) {
-			continue
-		}
-		out = append(out, c)
-	}
-	manifestSuffix := " (no manifest loaded)"
-	if manifest != nil {
-		manifestSuffix = ""
-	}
+	out := filterVisibleTargets(classified, p.IncludeInternal)
 	return tools.OKWithSummary(
-		fmt.Sprintf("Listed %d CDP target(s)%s.", len(out), manifestSuffix),
+		fmt.Sprintf("Listed %d CDP target(s)%s.", len(out), manifestSuffix(manifest)),
 		struct {
 			Targets     []addin.ClassifiedTarget `json:"targets"`
 			Manifest    *addin.Manifest          `json:"manifest,omitempty"`
@@ -83,4 +72,25 @@ func runListTargets(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 			HasManifest: manifest != nil,
 		},
 	)
+}
+
+// filterVisibleTargets drops internal (chrome://, edge://, devtools://)
+// targets unless includeInternal is set. It reuses the input backing array,
+// matching the prior in-place [:0] filter.
+func filterVisibleTargets(classified []addin.ClassifiedTarget, includeInternal bool) []addin.ClassifiedTarget {
+	out := classified[:0]
+	for _, c := range classified {
+		if !includeInternal && tools.IsInternalURL(c.URL) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
+}
+
+func manifestSuffix(manifest *addin.Manifest) string {
+	if manifest != nil {
+		return ""
+	}
+	return " (no manifest loaded)"
 }

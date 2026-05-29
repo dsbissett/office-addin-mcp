@@ -1,0 +1,11 @@
+{
+  "id": "host-fallback-id",
+  "name": { "short": "OnlyShort" },
+  "extensions": [
+    {
+      "requirements": { "scopes": [], "capabilities": [] },
+      "runtimes": []
+    }
+  ],
+  "host": "Mailbox"
+}

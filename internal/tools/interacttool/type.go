@@ -35,6 +35,7 @@ func TypeText() tools.Tool {
 		Name:        "page.typeText",
 		Description: "Insert text at the currently focused element via Input.insertText. Use after page.click/page.fill has set focus.",
 		Schema:      json.RawMessage(typeTextSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true)},
 		Run:         runTypeText,
 	}
 }

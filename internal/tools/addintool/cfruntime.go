@@ -34,7 +34,12 @@ func CFRuntimeInfo() tools.Tool {
 		Name:        "addin.cfRuntimeInfo",
 		Description: "Probe the custom-functions runtime for registered functions. Best-effort: reads CustomFunctions._association.mappings if exposed.",
 		Schema:      json.RawMessage(cfRuntimeInfoSchema),
-		Run:         runCFRuntimeInfo,
+		Annotations: &tools.Annotations{
+			ReadOnlyHint:    true,
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		Run: runCFRuntimeInfo,
 	}
 }
 
@@ -43,14 +48,7 @@ func runCFRuntimeInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	sel := tools.TargetSelector{
-		TargetID:   p.TargetID,
-		URLPattern: p.URLPattern,
-	}
-	if sel.TargetID == "" && sel.URLPattern == "" {
-		sel.Surface = addin.SurfaceCFRuntime
-	}
-	att, err := env.Attach(ctx, sel)
+	att, err := env.Attach(ctx, cfRuntimeSelector(p))
 	if err != nil {
 		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
@@ -59,23 +57,41 @@ func runCFRuntimeInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 	if err != nil {
 		return mapPayloadError(err)
 	}
-	summary := "Probed custom-functions runtime."
+	return decodePayloadResultWithSummary(out, cfRuntimeSummary(out))
+}
+
+// cfRuntimeSelector resolves the target selector, defaulting to the
+// cf-runtime surface when no explicit target id / url pattern is given.
+func cfRuntimeSelector(p cfRuntimeParams) tools.TargetSelector {
+	sel := tools.TargetSelector{
+		TargetID:   p.TargetID,
+		URLPattern: p.URLPattern,
+	}
+	if sel.TargetID == "" && sel.URLPattern == "" {
+		sel.Surface = addin.SurfaceCFRuntime
+	}
+	return sel
+}
+
+// cfRuntimeSummary derives the human summary from the probe payload, falling
+// back to a generic line when the payload can't be decoded.
+func cfRuntimeSummary(out json.RawMessage) string {
 	var probe struct {
 		Available bool           `json:"available"`
 		Mappings  map[string]any `json:"mappings"`
 		Functions []any          `json:"functions"`
 	}
-	if err := json.Unmarshal(out, &probe); err == nil {
-		switch {
-		case !probe.Available:
-			summary = "Custom-functions runtime not exposed in target."
-		case len(probe.Functions) > 0:
-			summary = fmt.Sprintf("Found %d registered custom function(s).", len(probe.Functions))
-		case len(probe.Mappings) > 0:
-			summary = fmt.Sprintf("Found %d custom-function mapping(s).", len(probe.Mappings))
-		default:
-			summary = "Custom-functions runtime exposed but no functions registered."
-		}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		return "Probed custom-functions runtime."
 	}
-	return decodePayloadResultWithSummary(out, summary)
+	switch {
+	case !probe.Available:
+		return "Custom-functions runtime not exposed in target."
+	case len(probe.Functions) > 0:
+		return fmt.Sprintf("Found %d registered custom function(s).", len(probe.Functions))
+	case len(probe.Mappings) > 0:
+		return fmt.Sprintf("Found %d custom-function mapping(s).", len(probe.Mappings))
+	default:
+		return "Custom-functions runtime exposed but no functions registered."
+	}
 }

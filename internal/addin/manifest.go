@@ -71,24 +71,24 @@ func ParseManifest(path string) (*Manifest, error) {
 	trimmed := strings.TrimLeft(strings.TrimPrefix(string(data), "\ufeff"), " \t\r\n")
 	switch {
 	case strings.HasPrefix(trimmed, "<"):
-		m, err := parseXMLManifest(data)
-		if err != nil {
-			return nil, fmt.Errorf("addin: parse %s: %w", path, err)
-		}
-		m.Path = path
-		m.Kind = "xml"
-		return m, nil
+		return parseManifestKind(path, "xml", data, parseXMLManifest)
 	case strings.HasPrefix(trimmed, "{"):
-		m, err := parseJSONManifest(data)
-		if err != nil {
-			return nil, fmt.Errorf("addin: parse %s: %w", path, err)
-		}
-		m.Path = path
-		m.Kind = "json"
-		return m, nil
+		return parseManifestKind(path, "json", data, parseJSONManifest)
 	default:
 		return nil, ErrUnknownManifest
 	}
+}
+
+// parseManifestKind runs the given parser, wraps any error with the path, and
+// stamps the resulting manifest with its source path and kind.
+func parseManifestKind(path, kind string, data []byte, parse func([]byte) (*Manifest, error)) (*Manifest, error) {
+	m, err := parse(data)
+	if err != nil {
+		return nil, fmt.Errorf("addin: parse %s: %w", path, err)
+	}
+	m.Path = path
+	m.Kind = kind
+	return m, nil
 }
 
 type xmlOfficeApp struct {
@@ -120,19 +120,7 @@ type xmlOfficeApp struct {
 
 type xmlVersionOverrides struct {
 	Hosts struct {
-		Hosts []struct {
-			XSIType         string `xml:"type,attr"`
-			DesktopFormFact struct {
-				ExtensionPoints []xmlExtensionPoint `xml:",any"`
-			} `xml:"DesktopFormFactor"`
-			Runtimes struct {
-				Runtimes []struct {
-					ID         string `xml:"id,attr"`
-					LifeTime   string `xml:"lifetime,attr"`
-					ResourceID string `xml:"resid,attr"`
-				} `xml:"Runtime"`
-			} `xml:"Runtimes"`
-		} `xml:"Host"`
+		Hosts []xmlVOHost `xml:"Host"`
 	} `xml:"Hosts"`
 	Resources struct {
 		URLs struct {
@@ -150,6 +138,20 @@ type xmlVersionOverrides struct {
 			} `xml:"Set"`
 		} `xml:"Sets"`
 	} `xml:"Requirements"`
+}
+
+type xmlVOHost struct {
+	XSIType         string `xml:"type,attr"`
+	DesktopFormFact struct {
+		ExtensionPoints []xmlExtensionPoint `xml:",any"`
+	} `xml:"DesktopFormFactor"`
+	Runtimes struct {
+		Runtimes []struct {
+			ID         string `xml:"id,attr"`
+			LifeTime   string `xml:"lifetime,attr"`
+			ResourceID string `xml:"resid,attr"`
+		} `xml:"Runtime"`
+	} `xml:"Runtimes"`
 }
 
 type xmlExtensionPoint struct {
@@ -181,6 +183,17 @@ func parseXMLManifest(data []byte) (*Manifest, error) {
 		ID:          strings.TrimSpace(doc.ID),
 		DisplayName: doc.DisplayName.DefaultValue,
 	}
+	applyXMLHostsAndRequirements(m, &doc)
+	applyXMLDefaultTaskpane(m, &doc)
+	if doc.VersionOverrides != nil {
+		applyXMLVersionOverrides(m, doc.VersionOverrides)
+	}
+	return m, nil
+}
+
+// applyXMLHostsAndRequirements copies the top-level <Hosts> and <Requirements>
+// blocks onto the manifest.
+func applyXMLHostsAndRequirements(m *Manifest, doc *xmlOfficeApp) {
 	for _, h := range doc.Hosts.Hosts {
 		if h.Name != "" {
 			m.Hosts = append(m.Hosts, h.Name)
@@ -192,49 +205,69 @@ func parseXMLManifest(data []byte) (*Manifest, error) {
 		}
 		m.Requirements = append(m.Requirements, RequirementSet{Name: s.Name, MinVersion: s.MinVersion})
 	}
+}
 
-	// Default taskpane source from <DefaultSettings><SourceLocation/>.
+// applyXMLDefaultTaskpane records the taskpane surface declared by
+// <DefaultSettings><SourceLocation/>.
+func applyXMLDefaultTaskpane(m *Manifest, doc *xmlOfficeApp) {
 	if u := strings.TrimSpace(doc.DefaultSettings.SourceLocation.DefaultValue); u != "" {
 		m.Surfaces = append(m.Surfaces, Surface{
 			Type: SurfaceTaskpane, URL: u, Pattern: urlPattern(u),
 		})
 	}
+}
 
-	if doc.VersionOverrides != nil {
-		urls := map[string]string{}
-		for _, u := range doc.VersionOverrides.Resources.URLs.Items {
-			urls[u.ID] = u.DefaultVal
-		}
-		for _, s := range doc.VersionOverrides.Requirements.Sets.Sets {
-			if s.Name == "" {
-				continue
-			}
-			m.Requirements = appendRequirementUnique(m.Requirements, RequirementSet{Name: s.Name, MinVersion: s.MinVersion})
-		}
-		for _, h := range doc.VersionOverrides.Hosts.Hosts {
-			for _, ep := range h.DesktopFormFact.ExtensionPoints {
-				if u, ok := resolveResID(urls, ep.SourceLocation.ResID); ok {
-					m.Surfaces = appendSurfaceUnique(m.Surfaces, surfaceForExtensionPoint(ep.XSIType, u))
-				}
-				if u, ok := resolveResID(urls, ep.Page.SourceLocation.ResID); ok {
-					m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceTaskpane, URL: u, Pattern: urlPattern(u)})
-				}
-				if u, ok := resolveResID(urls, ep.Script.SourceLocation.ResID); ok {
-					m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceCFRuntime, URL: u, Pattern: urlPattern(u)})
-				}
-			}
-			for _, rt := range h.Runtimes.Runtimes {
-				if u, ok := resolveResID(urls, rt.ResourceID); ok {
-					t := SurfaceTaskpane
-					if strings.EqualFold(rt.LifeTime, "long") {
-						t = SurfaceTaskpane // shared runtime — treat as taskpane
-					}
-					m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: t, URL: u, Pattern: urlPattern(u)})
-				}
-			}
-		}
+// applyXMLVersionOverrides folds the <VersionOverrides> requirements and
+// per-host surfaces (extension points + runtimes) into the manifest.
+func applyXMLVersionOverrides(m *Manifest, vo *xmlVersionOverrides) {
+	urls := map[string]string{}
+	for _, u := range vo.Resources.URLs.Items {
+		urls[u.ID] = u.DefaultVal
 	}
-	return m, nil
+	for _, s := range vo.Requirements.Sets.Sets {
+		if s.Name == "" {
+			continue
+		}
+		m.Requirements = appendRequirementUnique(m.Requirements, RequirementSet{Name: s.Name, MinVersion: s.MinVersion})
+	}
+	for _, h := range vo.Hosts.Hosts {
+		applyXMLVOHost(m, urls, h)
+	}
+}
+
+// applyXMLVOHost records the extension-point and runtime surfaces declared by
+// one <VersionOverrides> host.
+func applyXMLVOHost(m *Manifest, urls map[string]string, h xmlVOHost) {
+	for _, ep := range h.DesktopFormFact.ExtensionPoints {
+		applyXMLExtensionPoint(m, urls, ep)
+	}
+	for _, rt := range h.Runtimes.Runtimes {
+		applyXMLRuntime(m, urls, rt.ResourceID)
+	}
+}
+
+// applyXMLExtensionPoint resolves the URLs an extension point references and
+// records a surface for each one that resolves.
+func applyXMLExtensionPoint(m *Manifest, urls map[string]string, ep xmlExtensionPoint) {
+	if u, ok := resolveResID(urls, ep.SourceLocation.ResID); ok {
+		m.Surfaces = appendSurfaceUnique(m.Surfaces, surfaceForExtensionPoint(ep.XSIType, u))
+	}
+	if u, ok := resolveResID(urls, ep.Page.SourceLocation.ResID); ok {
+		m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceTaskpane, URL: u, Pattern: urlPattern(u)})
+	}
+	if u, ok := resolveResID(urls, ep.Script.SourceLocation.ResID); ok {
+		m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceCFRuntime, URL: u, Pattern: urlPattern(u)})
+	}
+}
+
+// applyXMLRuntime records a taskpane surface for a runtime resource. Both
+// short- and long-lifetime (shared) runtimes are treated as taskpanes.
+func applyXMLRuntime(m *Manifest, urls map[string]string, resID string) {
+	u, ok := resolveResID(urls, resID)
+	if !ok {
+		return
+	}
+	m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceTaskpane, URL: u, Pattern: urlPattern(u)})
 }
 
 func surfaceForExtensionPoint(xsiType, u string) Surface {
@@ -256,32 +289,36 @@ type jsonManifest struct {
 		Short string `json:"short"`
 		Full  string `json:"full"`
 	} `json:"name"`
-	DisplayName   string   `json:"displayName"`
-	Authorization struct{} `json:"authorization"`
-	Extensions    []struct {
-		Requirements struct {
-			Scopes       []string `json:"scopes"`
-			FormFactors  []string `json:"formFactors"`
-			Capabilities []struct {
-				Name       string `json:"name"`
-				MinVersion string `json:"minVersion"`
-			} `json:"capabilities"`
-		} `json:"requirements"`
-		Runtimes []struct {
-			ID   string `json:"id"`
-			Type string `json:"type"`
-			Code struct {
-				Page   string `json:"page"`
-				Script string `json:"script"`
-			} `json:"code"`
-			Lifetime string `json:"lifetime"`
-			Actions  []struct {
-				ID   string `json:"id"`
-				Type string `json:"type"`
-			} `json:"actions"`
-		} `json:"runtimes"`
-	} `json:"extensions"`
-	Host string `json:"host"`
+	DisplayName   string          `json:"displayName"`
+	Authorization struct{}        `json:"authorization"`
+	Extensions    []jsonExtension `json:"extensions"`
+	Host          string          `json:"host"`
+}
+
+type jsonExtension struct {
+	Requirements struct {
+		Scopes       []string `json:"scopes"`
+		FormFactors  []string `json:"formFactors"`
+		Capabilities []struct {
+			Name       string `json:"name"`
+			MinVersion string `json:"minVersion"`
+		} `json:"capabilities"`
+	} `json:"requirements"`
+	Runtimes []jsonRuntime `json:"runtimes"`
+}
+
+type jsonRuntime struct {
+	ID   string `json:"id"`
+	Type string `json:"type"`
+	Code struct {
+		Page   string `json:"page"`
+		Script string `json:"script"`
+	} `json:"code"`
+	Lifetime string `json:"lifetime"`
+	Actions  []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	} `json:"actions"`
 }
 
 func parseJSONManifest(data []byte) (*Manifest, error) {
@@ -289,42 +326,59 @@ func parseJSONManifest(data []byte) (*Manifest, error) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	m := &Manifest{ID: doc.ID}
-	switch {
-	case doc.DisplayName != "":
-		m.DisplayName = doc.DisplayName
-	case doc.Name.Full != "":
-		m.DisplayName = doc.Name.Full
-	default:
-		m.DisplayName = doc.Name.Short
-	}
+	m := &Manifest{ID: doc.ID, DisplayName: jsonDisplayName(&doc)}
 	for _, ext := range doc.Extensions {
-		for _, scope := range ext.Requirements.Scopes {
-			m.Hosts = appendStringUnique(m.Hosts, jsonScopeToHost(scope))
-		}
-		for _, c := range ext.Requirements.Capabilities {
-			if c.Name == "" {
-				continue
-			}
-			m.Requirements = appendRequirementUnique(m.Requirements, RequirementSet{Name: c.Name, MinVersion: c.MinVersion})
-		}
-		for _, rt := range ext.Runtimes {
-			if rt.Code.Page != "" {
-				t := SurfaceTaskpane
-				if hasCustomFunctionsAction(rt.Actions) {
-					t = SurfaceCFRuntime
-				}
-				m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: t, URL: rt.Code.Page, Pattern: urlPattern(rt.Code.Page)})
-			}
-			if rt.Code.Script != "" {
-				m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceCFRuntime, URL: rt.Code.Script, Pattern: urlPattern(rt.Code.Script)})
-			}
-		}
+		applyJSONExtension(m, ext)
 	}
 	if len(m.Hosts) == 0 && doc.Host != "" {
 		m.Hosts = []string{doc.Host}
 	}
 	return m, nil
+}
+
+// jsonDisplayName picks the friendly name, preferring the explicit
+// displayName, then name.full, then name.short.
+func jsonDisplayName(doc *jsonManifest) string {
+	switch {
+	case doc.DisplayName != "":
+		return doc.DisplayName
+	case doc.Name.Full != "":
+		return doc.Name.Full
+	default:
+		return doc.Name.Short
+	}
+}
+
+// applyJSONExtension folds one extension's scopes, capabilities, and runtimes
+// into the manifest.
+func applyJSONExtension(m *Manifest, ext jsonExtension) {
+	for _, scope := range ext.Requirements.Scopes {
+		m.Hosts = appendStringUnique(m.Hosts, jsonScopeToHost(scope))
+	}
+	for _, c := range ext.Requirements.Capabilities {
+		if c.Name == "" {
+			continue
+		}
+		m.Requirements = appendRequirementUnique(m.Requirements, RequirementSet{Name: c.Name, MinVersion: c.MinVersion})
+	}
+	for _, rt := range ext.Runtimes {
+		applyJSONRuntime(m, rt)
+	}
+}
+
+// applyJSONRuntime records the page and script surfaces for one runtime. A
+// page that drives a custom-function action is classified as a CF runtime.
+func applyJSONRuntime(m *Manifest, rt jsonRuntime) {
+	if rt.Code.Page != "" {
+		t := SurfaceTaskpane
+		if hasCustomFunctionsAction(rt.Actions) {
+			t = SurfaceCFRuntime
+		}
+		m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: t, URL: rt.Code.Page, Pattern: urlPattern(rt.Code.Page)})
+	}
+	if rt.Code.Script != "" {
+		m.Surfaces = appendSurfaceUnique(m.Surfaces, Surface{Type: SurfaceCFRuntime, URL: rt.Code.Script, Pattern: urlPattern(rt.Code.Script)})
+	}
 }
 
 func hasCustomFunctionsAction(actions []struct {
@@ -378,14 +432,18 @@ func urlPattern(raw string) string {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" {
 		// Fall back to the basename — useful for file:// and resource paths.
-		base := filepath.Base(raw)
-		return base
+		return filepath.Base(raw)
 	}
-	p := parsed.Path
-	if p == "/" || p == "" {
-		return parsed.Host
+	return hostPathPattern(parsed.Host, parsed.Path)
+}
+
+// hostPathPattern joins host and path, dropping an empty or root-only path so
+// the pattern stays a useful substring for matching CDP target URLs.
+func hostPathPattern(host, path string) string {
+	if path == "/" || path == "" {
+		return host
 	}
-	return parsed.Host + p
+	return host + path
 }
 
 func appendStringUnique(out []string, v string) []string {

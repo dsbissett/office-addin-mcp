@@ -100,101 +100,133 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 		slog.Debug("dispatch.end", "request_id", requestID, "tool", req.Tool, "duration_ms", time.Since(start).Milliseconds())
 	}()
 
+	tool, rawParams, failure := d.lookupAndValidate(req)
+	if failure != nil {
+		return finalize(diag, start, 0, *failure)
+	}
+
+	if tool.NoSession {
+		return d.dispatchNoSession(ctx, req, tool, rawParams, &diag, start)
+	}
+	return d.dispatchWithSession(ctx, req, tool, rawParams, &diag, start, requestID)
+}
+
+// lookupAndValidate resolves the tool and normalizes+validates the raw params.
+// On failure it returns a populated Result; otherwise the tool and params.
+func (d *Dispatcher) lookupAndValidate(req Request) (*Tool, []byte, *Result) {
 	tool, ok := d.Registry.Get(req.Tool)
 	if !ok {
-		return finalize(diag, start, 0, Result{Err: &EnvelopeError{
+		return nil, nil, &Result{Err: &EnvelopeError{
 			Code:     "unknown_tool",
 			Message:  fmt.Sprintf("unknown tool: %s", req.Tool),
 			Category: CategoryNotFound,
-		}})
+		}}
 	}
-
 	rawParams := req.Params
 	if len(rawParams) == 0 {
 		rawParams = []byte("{}")
 	}
 	if err := validateParams(tool.compiled, rawParams); err != nil {
-		return finalize(diag, start, 0, Result{Err: &EnvelopeError{
+		return nil, nil, &Result{Err: &EnvelopeError{
 			Code:     "schema_violation",
 			Message:  err.Error(),
 			Category: CategoryValidation,
-		}})
+		}}
 	}
+	return tool, rawParams, nil
+}
 
-	if tool.NoSession {
-		env := &RunEnv{
-			Diag:           &diag,
-			Endpoint:       req.Endpoint,
-			AllowDangerous: d.AllowDangerous,
-			SetEndpoint:    d.SetEndpoint,
-			Manifest:       d.Manifest,
-			SetManifest:    d.SetManifest,
-			DocCache:       d.DocCache,
-			Recorder:       d.Recorder,
-			Progress:       req.Progress,
-			Log:            req.Log,
-		}
-		if d.Sessions != nil {
-			env.ResetSessions = d.Sessions.DropAll
-		}
-		if d.Recorder != nil {
-			env.Recording = func(tool string, params []byte) error {
-				return d.Recorder.Append(tool, params)
-			}
-		}
-		res := tool.Run(ctx, rawParams, env)
-		if res.Err != nil && res.Err.Category == CategoryOfficeJS {
-			classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
-		}
-		// Record successful tool calls when recording is active.
-		if res.Err == nil && env.Recording != nil {
-			_ = env.Recording(req.Tool, rawParams)
-		}
-		return finalize(diag, start, 0, res)
+// dispatchNoSession runs a lifecycle (NoSession) tool with a connection-free
+// RunEnv.
+func (d *Dispatcher) dispatchNoSession(ctx context.Context, req Request, tool *Tool, rawParams []byte, diag *Diagnostics, start time.Time) Envelope {
+	env := &RunEnv{
+		Diag:           diag,
+		Endpoint:       req.Endpoint,
+		AllowDangerous: d.AllowDangerous,
+		SetEndpoint:    d.SetEndpoint,
+		Manifest:       d.Manifest,
+		SetManifest:    d.SetManifest,
+		DocCache:       d.DocCache,
+		Recorder:       d.Recorder,
+		Progress:       req.Progress,
+		Log:            req.Log,
 	}
+	if d.Sessions != nil {
+		env.ResetSessions = d.Sessions.DropAll
+	}
+	if d.Recorder != nil {
+		env.Recording = func(tool string, params []byte) error {
+			return d.Recorder.Append(tool, params)
+		}
+	}
+	res := runAndEnrich(ctx, tool, req, rawParams, env)
+	return finalize(*diag, start, 0, res)
+}
 
+// dispatchWithSession acquires a pooled session/connection (with one automatic
+// recovery attempt), wires the per-call RunEnv, runs the tool, and finalizes
+// with the CDP round-trip delta.
+func (d *Dispatcher) dispatchWithSession(ctx context.Context, req Request, tool *Tool, rawParams []byte, diag *Diagnostics, start time.Time, requestID string) Envelope {
 	sess := d.Sessions.Get(req.SessionID)
 	if d.Ephemeral {
 		defer d.Sessions.Drop(req.SessionID)
 	}
 
-	conn, release, err := sess.Acquire(ctx, req.Endpoint)
+	conn, release, err := d.acquireWithRecover(ctx, &req, &sess, requestID)
 	if err != nil {
-		// Self-healing: a dial failure usually means the Excel this server
-		// launched was closed. Try one automatic stop+relaunch, then re-acquire
-		// against the fresh endpoint. Recovery resets the session pool, so the
-		// retry starts with a clean reconnect budget (recovery launches never
-		// consumed it — they use HTTP probes, not session dials).
-		if d.Recover != nil && errors.Is(err, session.ErrDialFailed) {
-			if newEP, rerr := d.Recover(ctx); rerr == nil {
-				slog.Warn("dispatch.autorecover", "request_id", requestID, "tool", req.Tool, "endpoint", newEP.BrowserURL)
-				if req.Log != nil {
-					req.Log("warning", "CDP connection was dead; auto-relaunched the add-in and retried.")
-				}
-				req.Endpoint = newEP
-				sess = d.Sessions.Get(req.SessionID)
-				conn, release, err = sess.Acquire(ctx, newEP)
-			} else {
-				slog.Debug("dispatch.autorecover_skipped", "request_id", requestID, "reason", rerr)
-			}
-		}
-		if err != nil {
-			return finalize(diag, start, 0, Result{Err: classifyAcquireErr(err, req.Endpoint)})
-		}
+		return finalize(*diag, start, 0, Result{Err: classifyAcquireErr(err, req.Endpoint)})
 	}
 	defer release()
 
-	// Endpoint diagnostic — populated by the connection lifecycle. We rebuild
-	// from the session's view of the endpoint config.
-	if ep := req.Endpoint; ep.WSEndpoint != "" {
-		diag.Endpoint = ep.WSEndpoint
-	} else if ep.BrowserURL != "" {
-		diag.Endpoint = ep.BrowserURL
-	}
-
+	setEndpointDiag(diag, req.Endpoint)
 	rtStart := conn.RoundTrips()
 
-	env := buildRunEnv(sess, conn, &diag, d.AllowDangerous, d.Manifest, d.Recorder)
+	env := d.buildSessionEnv(req, sess, conn, diag)
+	res := runAndEnrich(ctx, tool, req, rawParams, env)
+	return finalize(*diag, start, conn.RoundTrips()-rtStart, res)
+}
+
+// acquireWithRecover acquires a connection, and on a dial failure attempts one
+// automatic stop+relaunch (when d.Recover is set) before re-acquiring against
+// the fresh endpoint. req and sess are updated in place when recovery occurs.
+func (d *Dispatcher) acquireWithRecover(ctx context.Context, req *Request, sess **session.Session, requestID string) (*cdp.Connection, func(), error) {
+	conn, release, err := (*sess).Acquire(ctx, req.Endpoint)
+	if err == nil {
+		return conn, release, nil
+	}
+	// Self-healing: a dial failure usually means the Excel this server
+	// launched was closed. Try one automatic stop+relaunch, then re-acquire
+	// against the fresh endpoint. Recovery resets the session pool, so the
+	// retry starts with a clean reconnect budget (recovery launches never
+	// consumed it — they use HTTP probes, not session dials).
+	if d.Recover == nil || !errors.Is(err, session.ErrDialFailed) {
+		return nil, nil, err
+	}
+	return d.relaunchAndReacquire(ctx, req, sess, requestID, err)
+}
+
+// relaunchAndReacquire performs the one-shot recovery: relaunch the add-in and
+// re-acquire against the fresh endpoint. On recovery failure it returns the
+// original acquire error (acquireErr) so the caller's classification is stable.
+func (d *Dispatcher) relaunchAndReacquire(ctx context.Context, req *Request, sess **session.Session, requestID string, acquireErr error) (*cdp.Connection, func(), error) {
+	newEP, rerr := d.Recover(ctx)
+	if rerr != nil {
+		slog.Debug("dispatch.autorecover_skipped", "request_id", requestID, "reason", rerr)
+		return nil, nil, acquireErr
+	}
+	slog.Warn("dispatch.autorecover", "request_id", requestID, "tool", req.Tool, "endpoint", newEP.BrowserURL)
+	if req.Log != nil {
+		req.Log("warning", "CDP connection was dead; auto-relaunched the add-in and retried.")
+	}
+	req.Endpoint = newEP
+	*sess = d.Sessions.Get(req.SessionID)
+	return (*sess).Acquire(ctx, newEP)
+}
+
+// buildSessionEnv constructs the per-call RunEnv for the session path, layering
+// the dispatcher-scope helpers over the session-bound base.
+func (d *Dispatcher) buildSessionEnv(req Request, sess *session.Session, conn *cdp.Connection, diag *Diagnostics) *RunEnv {
+	env := buildRunEnv(sess, conn, diag, d.AllowDangerous, d.Manifest, d.Recorder)
 	env.Endpoint = req.Endpoint
 	env.SetEndpoint = d.SetEndpoint
 	env.Manifest = d.Manifest
@@ -206,17 +238,31 @@ func (d *Dispatcher) Dispatch(ctx context.Context, req Request) Envelope {
 	if d.Sessions != nil {
 		env.ResetSessions = d.Sessions.DropAll
 	}
+	return env
+}
+
+// runAndEnrich executes the tool, enriches Office.js errors, and records a
+// successful call when recording is active. Shared by both dispatch paths.
+func runAndEnrich(ctx context.Context, tool *Tool, req Request, rawParams []byte, env *RunEnv) Result {
 	res := tool.Run(ctx, rawParams, env)
 	if res.Err != nil && res.Err.Category == CategoryOfficeJS {
 		classifyOfficeJSErr(ctx, env, req.Tool, rawParams, res.Err)
 	}
-
 	// Record successful tool calls when recording is active.
 	if res.Err == nil && env.Recording != nil {
 		_ = env.Recording(req.Tool, rawParams)
 	}
+	return res
+}
 
-	return finalize(diag, start, conn.RoundTrips()-rtStart, res)
+// setEndpointDiag stamps the endpoint diagnostic from the call's endpoint
+// config, preferring the WS endpoint over the browser URL.
+func setEndpointDiag(diag *Diagnostics, ep webview2.Config) {
+	if ep.WSEndpoint != "" {
+		diag.Endpoint = ep.WSEndpoint
+	} else if ep.BrowserURL != "" {
+		diag.Endpoint = ep.BrowserURL
+	}
 }
 
 func finalize(diag Diagnostics, start time.Time, roundTrips int64, res Result) Envelope {
@@ -232,14 +278,7 @@ func finalize(diag Diagnostics, start time.Time, roundTrips int64, res Result) E
 // with a code distinct enough for the agent to branch on, a recovery hint,
 // and Details["probedEndpoint"]/["recoverableViaTool"] when applicable.
 func classifyAcquireErr(err error, ep webview2.Config) *EnvelopeError {
-	probed := ep.WSEndpoint
-	if probed == "" {
-		probed = ep.BrowserURL
-	}
-	if probed == "" {
-		probed = "http://127.0.0.1:9222"
-	}
-	details := map[string]any{"probedEndpoint": probed}
+	details := map[string]any{"probedEndpoint": probedEndpoint(ep)}
 
 	switch {
 	case errors.Is(err, session.ErrReconnectBudgetExhausted):
@@ -281,6 +320,18 @@ func classifyAcquireErr(err error, ep webview2.Config) *EnvelopeError {
 	}
 }
 
+// probedEndpoint returns the endpoint string we tried to reach, preferring the
+// WS endpoint, then the browser URL, then the conventional default port.
+func probedEndpoint(ep webview2.Config) string {
+	if ep.WSEndpoint != "" {
+		return ep.WSEndpoint
+	}
+	if ep.BrowserURL != "" {
+		return ep.BrowserURL
+	}
+	return "http://127.0.0.1:9222"
+}
+
 // newRequestID returns 16 hex chars of cryptographic randomness, suitable as a
 // per-call correlation id. Falls back to a timestamp string only if the OS RNG
 // is unavailable — that path should be unreachable in practice.
@@ -318,49 +369,7 @@ func buildRunEnv(sess *session.Session, conn *cdp.Connection, diag *Diagnostics,
 		},
 		AllowDangerous: allowDangerous,
 		Attach: func(ctx context.Context, sel TargetSelector) (*AttachedTarget, error) {
-			// Empty selector: prefer the sticky default installed by
-			// pages.select. Falls through to FirstPageTarget when unset.
-			if sel.TargetID == "" && sel.URLPattern == "" && sel.Surface == "" && sel.AddinID == "" {
-				if def, ok := sess.DefaultSelection(); ok {
-					diag.TargetID = def.Target.TargetID
-					diag.CDPSessionID = def.SessionID
-					return &AttachedTarget{
-						Conn:      conn,
-						Target:    def.Target,
-						SessionID: def.SessionID,
-					}, nil
-				}
-			}
-			key := selectorCacheKey(sel)
-			if cached, ok := sess.Selected(sel.TargetID, key); ok {
-				diag.TargetID = cached.Target.TargetID
-				diag.CDPSessionID = cached.SessionID
-				return &AttachedTarget{
-					Conn:      conn,
-					Target:    cached.Target,
-					SessionID: cached.SessionID,
-				}, nil
-			}
-			var m *addin.Manifest
-			if manifest != nil {
-				m = manifest()
-			}
-			target, err := ResolveTarget(ctx, conn, sel, m)
-			if err != nil {
-				return nil, err
-			}
-			diag.TargetID = target.TargetID
-			cdpSID, err := conn.AttachToTarget(ctx, target.TargetID)
-			if err != nil {
-				return nil, err
-			}
-			diag.CDPSessionID = cdpSID
-			sess.SetSelected(sel.TargetID, key, target, cdpSID)
-			return &AttachedTarget{
-				Conn:      conn,
-				Target:    target,
-				SessionID: cdpSID,
-			}, nil
+			return attachTarget(ctx, sess, conn, diag, manifest, sel)
 		},
 		SetDefaultSelection: func(target cdp.TargetInfo, cdpSID string) {
 			sess.SetDefaultSelection(target, cdpSID)
@@ -401,4 +410,55 @@ func selectorCacheKey(sel TargetSelector) string {
 		return ""
 	}
 	return "surface=" + string(sel.Surface) + "|addin=" + sel.AddinID
+}
+
+// attachTarget resolves and attaches the target for a selector. It prefers the
+// sticky default for an empty selector, then the per-session selector cache,
+// finally resolving live and attaching (caching the result). Diagnostics are
+// stamped with the chosen target/CDP session in every branch.
+func attachTarget(ctx context.Context, sess *session.Session, conn *cdp.Connection, diag *Diagnostics, manifest func() *addin.Manifest, sel TargetSelector) (*AttachedTarget, error) {
+	if isEmptySelector(sel) {
+		if def, ok := sess.DefaultSelection(); ok {
+			return attachedFromCache(conn, diag, def.Target, def.SessionID), nil
+		}
+	}
+	key := selectorCacheKey(sel)
+	if cached, ok := sess.Selected(sel.TargetID, key); ok {
+		return attachedFromCache(conn, diag, cached.Target, cached.SessionID), nil
+	}
+	return resolveAndAttach(ctx, sess, conn, diag, manifest, sel, key)
+}
+
+// isEmptySelector reports whether no selection criteria were supplied.
+func isEmptySelector(sel TargetSelector) bool {
+	return sel.TargetID == "" && sel.URLPattern == "" && sel.Surface == "" && sel.AddinID == ""
+}
+
+// attachedFromCache stamps diagnostics and builds an AttachedTarget for a
+// target/CDP session already known to the session (default or cache hit).
+func attachedFromCache(conn *cdp.Connection, diag *Diagnostics, target cdp.TargetInfo, cdpSID string) *AttachedTarget {
+	diag.TargetID = target.TargetID
+	diag.CDPSessionID = cdpSID
+	return &AttachedTarget{Conn: conn, Target: target, SessionID: cdpSID}
+}
+
+// resolveAndAttach resolves the selector against the live connection, attaches
+// to the chosen target, caches the result, and stamps diagnostics.
+func resolveAndAttach(ctx context.Context, sess *session.Session, conn *cdp.Connection, diag *Diagnostics, manifest func() *addin.Manifest, sel TargetSelector, key string) (*AttachedTarget, error) {
+	var m *addin.Manifest
+	if manifest != nil {
+		m = manifest()
+	}
+	target, err := ResolveTarget(ctx, conn, sel, m)
+	if err != nil {
+		return nil, err
+	}
+	diag.TargetID = target.TargetID
+	cdpSID, err := conn.AttachToTarget(ctx, target.TargetID)
+	if err != nil {
+		return nil, err
+	}
+	diag.CDPSessionID = cdpSID
+	sess.SetSelected(sel.TargetID, key, target, cdpSID)
+	return &AttachedTarget{Conn: conn, Target: target, SessionID: cdpSID}, nil
 }

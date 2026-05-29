@@ -92,23 +92,39 @@ func (c *Connection) Close() error {
 }
 
 func (c *Connection) closeWithErr(err error) {
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
+	pending, subs, ok := c.markClosed(err)
+	if !ok {
 		return
 	}
-	c.closed = true
-	c.closedErr = err
-	pending := c.pending
-	c.pending = nil
-	subs := c.subs
-	c.subs = nil
-	c.mu.Unlock()
 
 	_ = c.ws.Close()
 	for _, ch := range pending {
 		close(ch)
 	}
+	closeSubscribers(subs)
+}
+
+// markClosed flips the connection to closed under the lock and detaches the
+// pending and subscriber maps. ok is false if the connection was already
+// closed (in which case the returned maps are nil).
+func (c *Connection) markClosed(err error) (pending map[int64]chan frame, subs map[string][]chan Event, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return nil, nil, false
+	}
+	c.closed = true
+	c.closedErr = err
+	pending = c.pending
+	c.pending = nil
+	subs = c.subs
+	c.subs = nil
+	return pending, subs, true
+}
+
+// closeSubscribers closes every subscriber channel exactly once, since one
+// channel may be registered under multiple methods (see SubscribeMethods).
+func closeSubscribers(subs map[string][]chan Event) {
 	closed := make(map[chan Event]struct{}, len(subs))
 	for _, list := range subs {
 		for _, ch := range list {
@@ -139,30 +155,47 @@ func (c *Connection) readLoop() {
 		if err := json.Unmarshal(data, &f); err != nil {
 			continue
 		}
-		if f.ID != 0 {
-			c.mu.Lock()
-			ch, ok := c.pending[f.ID]
-			if ok {
-				delete(c.pending, f.ID)
-			}
-			c.mu.Unlock()
-			if ok {
-				ch <- f
-				close(ch)
-			}
-			continue
-		}
-		if f.Method != "" {
-			c.mu.Lock()
-			subs := append([]chan Event(nil), c.subs[f.Method]...)
-			c.mu.Unlock()
-			ev := Event{SessionID: f.SessionID, Method: f.Method, Params: f.Params}
-			for _, s := range subs {
-				select {
-				case s <- ev:
-				default:
-				}
-			}
+		c.dispatchFrame(f)
+	}
+}
+
+// dispatchFrame routes a decoded frame: id-bearing frames are responses to
+// pending Send calls; method-bearing frames are events fanned out to
+// subscribers. Frames matching neither are ignored.
+func (c *Connection) dispatchFrame(f frame) {
+	switch {
+	case f.ID != 0:
+		c.deliverResponse(f)
+	case f.Method != "":
+		c.deliverEvent(f)
+	}
+}
+
+// deliverResponse hands a response frame to its waiting Send caller, if any.
+func (c *Connection) deliverResponse(f frame) {
+	c.mu.Lock()
+	ch, ok := c.pending[f.ID]
+	if ok {
+		delete(c.pending, f.ID)
+	}
+	c.mu.Unlock()
+	if ok {
+		ch <- f
+		close(ch)
+	}
+}
+
+// deliverEvent fans an event frame out to all subscribers of its method,
+// dropping the event for any subscriber whose buffer is full.
+func (c *Connection) deliverEvent(f frame) {
+	c.mu.Lock()
+	subs := append([]chan Event(nil), c.subs[f.Method]...)
+	c.mu.Unlock()
+	ev := Event{SessionID: f.SessionID, Method: f.Method, Params: f.Params}
+	for _, s := range subs {
+		select {
+		case s <- ev:
+		default:
 		}
 	}
 }
@@ -191,22 +224,35 @@ func (c *Connection) SubscribeMethods(methods []string, buffer int) (<-chan Even
 		if c.closed {
 			return
 		}
-		closed := false
-		for _, m := range methods {
-			list := c.subs[m]
-			for i, s := range list {
-				if s == ch {
-					c.subs[m] = append(list[:i], list[i+1:]...)
-					if !closed {
-						close(ch)
-						closed = true
-					}
-					break
-				}
-			}
-		}
+		c.unsubscribeMethods(methods, ch)
 	}
 	return ch, cancel
+}
+
+// unsubscribeMethods removes ch from every method's subscriber list and closes
+// it once. Callers must hold c.mu. Each method list holds ch at most once, so
+// the first removal that closes ch suffices.
+func (c *Connection) unsubscribeMethods(methods []string, ch chan Event) {
+	closed := false
+	for _, m := range methods {
+		if c.removeSub(m, ch) && !closed {
+			close(ch)
+			closed = true
+		}
+	}
+}
+
+// removeSub removes ch from the subscriber list for method m, returning true
+// if it was present. Callers must hold c.mu.
+func (c *Connection) removeSub(m string, ch chan Event) bool {
+	list := c.subs[m]
+	for i, s := range list {
+		if s == ch {
+			c.subs[m] = append(list[:i], list[i+1:]...)
+			return true
+		}
+	}
+	return false
 }
 
 // Subscribe returns a channel for events of the given method. The returned
@@ -257,16 +303,11 @@ func (c *Connection) Send(ctx context.Context, sessionID, method string, params 
 	if rid := internallog.RequestID(ctx); rid != "" {
 		slog.Debug("cdp.send", "request_id", rid, "session_id", sessionID, "method", method)
 	}
-	c.mu.Lock()
-	if c.closed {
-		err := c.closedErr
-		c.mu.Unlock()
-		return nil, fmt.Errorf("%w: %v", ErrClosed, err)
+
+	id, ch, err := c.registerPending()
+	if err != nil {
+		return nil, err
 	}
-	id := c.nextID.Add(1)
-	ch := make(chan frame, 1)
-	c.pending[id] = ch
-	c.mu.Unlock()
 
 	cleanup := func() {
 		c.mu.Lock()
@@ -276,20 +317,48 @@ func (c *Connection) Send(ctx context.Context, sessionID, method string, params 
 		c.mu.Unlock()
 	}
 
-	raw, err := json.Marshal(outgoing{ID: id, SessionID: sessionID, Method: method, Params: params})
-	if err != nil {
+	if err := c.writeCommand(outgoing{ID: id, SessionID: sessionID, Method: method, Params: params}); err != nil {
 		cleanup()
-		return nil, fmt.Errorf("cdp marshal %s: %w", method, err)
+		return nil, err
 	}
 
+	return c.awaitResponse(ctx, ch, cleanup)
+}
+
+// registerPending reserves a request id and registers its response channel,
+// failing fast if the connection is already closed.
+func (c *Connection) registerPending() (int64, chan frame, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return 0, nil, fmt.Errorf("%w: %v", ErrClosed, c.closedErr)
+	}
+	id := c.nextID.Add(1)
+	ch := make(chan frame, 1)
+	c.pending[id] = ch
+	return id, ch, nil
+}
+
+// writeCommand marshals and writes one outgoing command frame under the write
+// lock. Marshal and write failures are wrapped with the command method.
+func (c *Connection) writeCommand(cmd outgoing) error {
+	raw, err := json.Marshal(cmd)
+	if err != nil {
+		return fmt.Errorf("cdp marshal %s: %w", cmd.Method, err)
+	}
 	c.writeMu.Lock()
 	err = c.ws.WriteMessage(websocket.TextMessage, raw)
 	c.writeMu.Unlock()
 	if err != nil {
-		cleanup()
-		return nil, fmt.Errorf("cdp write %s: %w", method, err)
+		return fmt.Errorf("cdp write %s: %w", cmd.Method, err)
 	}
+	return nil
+}
 
+// awaitResponse blocks until the response frame arrives, the channel closes
+// (connection closed), or the context is canceled. cleanup deregisters the
+// pending entry on context cancellation.
+func (c *Connection) awaitResponse(ctx context.Context, ch <-chan frame, cleanup func()) (json.RawMessage, error) {
 	select {
 	case f, ok := <-ch:
 		if !ok {

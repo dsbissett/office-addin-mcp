@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
@@ -48,9 +47,10 @@ func Launch() tools.Tool {
 		Schema:      json.RawMessage(launchSchema),
 		Annotations: &tools.Annotations{
 			IdempotentHint: true,
-			// Spawns Excel + a dev-server process — leave DestructiveHint
-			// at the spec default of true so MCP clients can prompt before
-			// auto-firing this tool.
+			// Additive lifecycle mutation: spawns Excel + a dev-server but
+			// probes the port first and reuses any existing listener, so it
+			// neither overwrites user data nor stops the app.
+			DestructiveHint: tools.BoolPtr(false),
 		},
 		NoSession: true,
 		Run:       runLaunch,
@@ -62,13 +62,9 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	cwd := p.CWD
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return tools.Fail(tools.CategoryInternal, "getcwd_failed", err.Error(), false)
-		}
+	cwd, errRes := resolveCwd(p.CWD)
+	if errRes != nil {
+		return *errRes
 	}
 	env.Logf("info", "detecting add-in project in %s", cwd)
 	env.ReportProgress(0, 0, "Detecting add-in project")
@@ -99,6 +95,15 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	}
 	env.ReportProgress(step+1, 0, "Excel ready")
 
+	applyLaunchSuccess(env, res)
+	return tools.OKWithSummary(launchSummary(res), res)
+}
+
+// applyLaunchSuccess reconfigures the server after a successful launch: it
+// points the default CDP endpoint at the new Excel, drops any pooled session
+// bound to the replaced endpoint, and best-effort records the launched
+// manifest. Each effect is guarded so a RunEnv without the hook is a no-op.
+func applyLaunchSuccess(env *tools.RunEnv, res *launch.LaunchResult) {
 	if env.SetEndpoint != nil {
 		env.SetEndpoint(webview2.Config{BrowserURL: res.CDPURL})
 	}
@@ -116,11 +121,15 @@ func runLaunch(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 			env.SetManifest(m)
 		}
 	}
-	summary := fmt.Sprintf("Launched Excel (pid=%d) with CDP at %s.", res.PID, res.CDPURL)
+}
+
+// launchSummary builds the human-readable success summary, appending the dev
+// server port only when one was spawned.
+func launchSummary(res *launch.LaunchResult) string {
 	if res.DevServerPort > 0 {
-		summary = fmt.Sprintf("Launched Excel (pid=%d) with CDP at %s and dev server on :%d.", res.PID, res.CDPURL, res.DevServerPort)
+		return fmt.Sprintf("Launched Excel (pid=%d) with CDP at %s and dev server on :%d.", res.PID, res.CDPURL, res.DevServerPort)
 	}
-	return tools.OKWithSummary(summary, res)
+	return fmt.Sprintf("Launched Excel (pid=%d) with CDP at %s.", res.PID, res.CDPURL)
 }
 
 // launchErrToResult maps a *launch.LaunchError onto our envelope categories.

@@ -26,7 +26,11 @@ func RecordStart() tools.Tool {
 		Name:        "macro.record_start",
 		Description: "Begin recording a new macro with the given name. Subsequent tool calls will be captured until macro.record_stop is called.",
 		Schema:      schema,
-		NoSession:   true,
+		// Additive: opens a recording session without overwriting user data.
+		Annotations: &tools.Annotations{
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		NoSession: true,
 		Run: func(ctx context.Context, params json.RawMessage, env *tools.RunEnv) tools.Result {
 			type request struct {
 				Name string `json:"name"`

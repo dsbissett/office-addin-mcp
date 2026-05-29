@@ -22,6 +22,7 @@ func ListPivotTables() tools.Tool {
 		Name:        "excel.listPivotTables",
 		Description: "List all PivotTables in the workbook with name, worksheet, layout address, and enabled flags.",
 		Schema:      json.RawMessage(listPivotTablesSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListPivotTables,
 	}
 }
@@ -57,6 +58,7 @@ func PivotTableInfo() tools.Tool {
 		Name:        "excel.pivotTableInfo",
 		Description: "Structure of a PivotTable: row, column, data, and filter hierarchies with their source field names.",
 		Schema:      json.RawMessage(namedPivotSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runPivotTableInfo,
 	}
 }
@@ -77,6 +79,7 @@ func PivotTableValues() tools.Tool {
 		Name:        "excel.pivotTableValues",
 		Description: "Rendered values of a PivotTable layout range, truncated when it exceeds the cell cap.",
 		Schema:      json.RawMessage(namedPivotSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runPivotTableValues,
 	}
 }

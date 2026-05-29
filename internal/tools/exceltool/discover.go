@@ -18,6 +18,26 @@ const discoverSchema = `{
   "additionalProperties": false
 }`
 
+// discoverOutputSchema describes the success Data shape returned by
+// excel.discover. The top level merges the excel_discover.js payload
+// (filePath, fingerprint, worksheets, tables, namedRanges) with the cache
+// metadata (cached) injected by officetool.withCacheMeta; nested item shapes
+// are left permissive.
+const discoverOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "excel.discover result",
+  "type": "object",
+  "properties": {
+    "cached":      {"type": "boolean"},
+    "filePath":    {"type": "string"},
+    "fingerprint": {"type": "string"},
+    "worksheets":  {"type": "array", "items": {"type": "object"}},
+    "tables":      {"type": "array", "items": {"type": "object"}},
+    "namedRanges": {"type": "array", "items": {"type": "object"}}
+  },
+  "required": ["cached", "filePath", "fingerprint", "worksheets", "tables", "namedRanges"]
+}`
+
 type discoverParams struct {
 	Force bool `json:"force,omitempty"`
 	selectorFields
@@ -26,11 +46,12 @@ type discoverParams struct {
 // Discover returns the excel.discover tool definition.
 func Discover() tools.Tool {
 	return tools.Tool{
-		Name:        "excel.discover",
-		Description: "Cached workbook discovery: sheets, tables, named ranges, used-range bounds. Cache invalidates automatically when a coarse fingerprint shifts; pass force=true to bypass.",
-		Schema:      json.RawMessage(discoverSchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runDiscover,
+		Name:         "excel.discover",
+		Description:  "Cached workbook discovery: sheets, tables, named ranges, used-range bounds. Cache invalidates automatically when a coarse fingerprint shifts; pass force=true to bypass.",
+		Schema:       json.RawMessage(discoverSchema),
+		OutputSchema: json.RawMessage(discoverOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runDiscover,
 	}
 }
 

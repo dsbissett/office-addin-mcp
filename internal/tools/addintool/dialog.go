@@ -48,7 +48,12 @@ func OpenDialog() tools.Tool {
 		Name:        "addin.openDialog",
 		Description: "Open an Office Dialog API dialog from the taskpane (or chosen surface). Persists the dialog handle on the page for subsequent close / message subscription.",
 		Schema:      json.RawMessage(openDialogSchema),
-		Run:         runOpenDialog,
+		Annotations: &tools.Annotations{
+			// Additive UI: opens a dialog. Not idempotent — a second open
+			// while one is active is rejected by the host (DialogAlreadyOpen).
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		Run: runOpenDialog,
 	}
 }
 
@@ -57,17 +62,21 @@ func runOpenDialog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	if p.Surface == "" && p.TargetID == "" && p.URLPattern == "" {
-		p.Surface = addin.SurfaceTaskpane
+	att, fail := attachDialogTarget(ctx, env, p.TargetID, p.URLPattern, p.Surface)
+	if fail != nil {
+		return *fail
 	}
-	att, err := env.Attach(ctx, tools.TargetSelector{
-		TargetID:   p.TargetID,
-		URLPattern: p.URLPattern,
-		Surface:    p.Surface,
-	})
+	exec := officejs.New(att.Conn, att.SessionID)
+	out, err := exec.Run(ctx, "addin.openDialog", openDialogArgs(p))
 	if err != nil {
-		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
+		return mapPayloadError(err)
 	}
+	return decodePayloadResultWithSummary(out, "Opened dialog at "+p.URL+".")
+}
+
+// openDialogArgs builds the displayDialogAsync options payload, omitting
+// zero-valued / unset fields so the page-side default is preserved.
+func openDialogArgs(p openDialogParams) map[string]any {
 	args := map[string]any{"url": p.URL}
 	if p.Height > 0 {
 		args["height"] = p.Height
@@ -81,12 +90,26 @@ func runOpenDialog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if p.PromptBeforeOpen {
 		args["promptBeforeOpen"] = true
 	}
-	exec := officejs.New(att.Conn, att.SessionID)
-	out, err := exec.Run(ctx, "addin.openDialog", args)
-	if err != nil {
-		return mapPayloadError(err)
+	return args
+}
+
+// attachDialogTarget resolves the dialog target, defaulting to the taskpane
+// surface when no explicit selector is given. On failure it returns a non-nil
+// *tools.Result the caller should return verbatim.
+func attachDialogTarget(ctx context.Context, env *tools.RunEnv, targetID, urlPattern string, surface addin.SurfaceType) (*tools.AttachedTarget, *tools.Result) {
+	if surface == "" && targetID == "" && urlPattern == "" {
+		surface = addin.SurfaceTaskpane
 	}
-	return decodePayloadResultWithSummary(out, "Opened dialog at "+p.URL+".")
+	att, err := env.Attach(ctx, tools.TargetSelector{
+		TargetID:   targetID,
+		URLPattern: urlPattern,
+		Surface:    surface,
+	})
+	if err != nil {
+		res := tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
+		return nil, &res
+	}
+	return att, nil
 }
 
 const dialogCloseSchema = `{
@@ -114,7 +137,14 @@ func DialogClose() tools.Tool {
 		Name:        "addin.dialogClose",
 		Description: "Close the active Office dialog opened via addin.openDialog from the same target. No-op if no dialog handle is found.",
 		Schema:      json.RawMessage(dialogCloseSchema),
-		Run:         runDialogPayload("addin.dialogClose"),
+		Annotations: &tools.Annotations{
+			// Closes a dialog; non-destructive (dismisses transient UI, not
+			// user document data). Idempotent: a second call no-ops once the
+			// dialog is already closed.
+			IdempotentHint:  true,
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		Run: runDialogPayload("addin.dialogClose"),
 	}
 }
 
@@ -138,7 +168,13 @@ func DialogSubscribe() tools.Tool {
 		Name:        "addin.dialogSubscribe",
 		Description: "Drain Office Dialog API messages and events queued since the previous call. The first invocation installs message/event handlers on the active dialog handle.",
 		Schema:      json.RawMessage(dialogSubscribeSchema),
-		Run:         runDialogPayload("addin.dialogSubscribe"),
+		Annotations: &tools.Annotations{
+			// Additive: installs handlers / drains the queued-message buffer.
+			// Not idempotent — each call consumes the messages it returns, so
+			// repeating yields a different (drained) end state.
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		Run: runDialogPayload("addin.dialogSubscribe"),
 	}
 }
 
@@ -148,16 +184,9 @@ func runDialogPayload(toolName string) func(context.Context, json.RawMessage, *t
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 		}
-		if p.Surface == "" && p.TargetID == "" && p.URLPattern == "" {
-			p.Surface = addin.SurfaceTaskpane
-		}
-		att, err := env.Attach(ctx, tools.TargetSelector{
-			TargetID:   p.TargetID,
-			URLPattern: p.URLPattern,
-			Surface:    p.Surface,
-		})
-		if err != nil {
-			return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
+		att, fail := attachDialogTarget(ctx, env, p.TargetID, p.URLPattern, p.Surface)
+		if fail != nil {
+			return *fail
 		}
 		exec := officejs.New(att.Conn, att.SessionID)
 		out, err := exec.Run(ctx, toolName, map[string]any{})
@@ -172,24 +201,32 @@ func runDialogPayload(toolName string) func(context.Context, json.RawMessage, *t
 func dialogPayloadSummary(toolName string, raw json.RawMessage) string {
 	switch toolName {
 	case "addin.dialogClose":
-		var probe struct {
-			Closed bool `json:"closed"`
-		}
-		if err := json.Unmarshal(raw, &probe); err == nil && probe.Closed {
-			return "Closed active dialog."
-		}
-		return "No active dialog handle to close."
+		return dialogCloseSummary(raw)
 	case "addin.dialogSubscribe":
-		var probe struct {
-			Messages []any `json:"messages"`
-			Events   []any `json:"events"`
-		}
-		if err := json.Unmarshal(raw, &probe); err == nil {
-			return fmt.Sprintf("Drained %d message(s) and %d event(s) from dialog.", len(probe.Messages), len(probe.Events))
-		}
-		return "Drained dialog messages."
+		return dialogSubscribeSummary(raw)
 	}
 	return ""
+}
+
+func dialogCloseSummary(raw json.RawMessage) string {
+	var probe struct {
+		Closed bool `json:"closed"`
+	}
+	if err := json.Unmarshal(raw, &probe); err == nil && probe.Closed {
+		return "Closed active dialog."
+	}
+	return "No active dialog handle to close."
+}
+
+func dialogSubscribeSummary(raw json.RawMessage) string {
+	var probe struct {
+		Messages []any `json:"messages"`
+		Events   []any `json:"events"`
+	}
+	if err := json.Unmarshal(raw, &probe); err == nil {
+		return fmt.Sprintf("Drained %d message(s) and %d event(s) from dialog.", len(probe.Messages), len(probe.Events))
+	}
+	return "Drained dialog messages."
 }
 
 func decodePayloadResultWithSummary(raw json.RawMessage, summary string) tools.Result {

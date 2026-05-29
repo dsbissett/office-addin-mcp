@@ -27,6 +27,20 @@ const querySchema = `{
   "additionalProperties": false
 }`
 
+const queryOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "outlook.query result",
+  "type": "object",
+  "required": ["folder", "rows", "count", "limited"],
+  "properties": {
+    "folder":  {"type": "string", "description": "Source scope; v1 always reports the active item context."},
+    "rows":    {"type": "array", "items": {"type": "object"}, "description": "Projected/filtered item records."},
+    "count":   {"type": "integer", "description": "Number of rows after filtering."},
+    "limited": {"type": "boolean", "description": "True when the result set was truncated by the query limit."},
+    "note":    {"type": "string", "description": "Scope caveat about folder-wide enumeration."}
+  }
+}`
+
 type queryParams struct {
 	Query json.RawMessage `json:"query,omitempty"`
 	officetool.SelectorFields
@@ -35,11 +49,12 @@ type queryParams struct {
 // Query returns the outlook.query tool definition.
 func Query() tools.Tool {
 	return tools.Tool{
-		Name:        "outlook.query",
-		Description: "Run a JSON-shaped query against Outlook items reachable from the active mail context.",
-		Schema:      json.RawMessage(querySchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runQuery,
+		Name:         "outlook.query",
+		Description:  "Run a JSON-shaped query against Outlook items reachable from the active mail context.",
+		Schema:       json.RawMessage(querySchema),
+		OutputSchema: json.RawMessage(queryOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runQuery,
 	}
 }
 

@@ -100,29 +100,46 @@ func (b *EventBuf) Drain(opts DrainOpts) DrainResult {
 		out.LastSeq = b.nextSeq
 		return out
 	}
+	out.Dropped = b.sinceGapLocked(opts.SinceSeq)
+	out.Records = b.collectLocked(opts.SinceSeq, opts.Limit)
+	out.LastSeq = lastSeqOf(out.Records, opts.SinceSeq)
+	return out
+}
+
+// sinceGapLocked reports whether opts.SinceSeq points before the oldest
+// retained entry, i.e. the caller missed records that have since been dropped.
+// Must hold b.mu and len(b.ring) > 0.
+func (b *EventBuf) sinceGapLocked(sinceSeq int64) bool {
 	oldest := b.ring[0].Seq
-	if opts.SinceSeq > 0 && opts.SinceSeq < oldest-1 {
-		out.Dropped = true
-	}
-	limit := opts.Limit
+	return sinceSeq > 0 && sinceSeq < oldest-1
+}
+
+// collectLocked returns retained records with Seq > sinceSeq, capped at limit
+// (limit <= 0 means "all retained"). Must hold b.mu.
+func (b *EventBuf) collectLocked(sinceSeq int64, limit int) []EventRecord {
 	if limit <= 0 {
 		limit = len(b.ring)
 	}
+	records := []EventRecord{}
 	for _, r := range b.ring {
-		if r.Seq <= opts.SinceSeq {
+		if r.Seq <= sinceSeq {
 			continue
 		}
-		out.Records = append(out.Records, r)
-		if len(out.Records) >= limit {
+		records = append(records, r)
+		if len(records) >= limit {
 			break
 		}
 	}
-	if len(out.Records) > 0 {
-		out.LastSeq = out.Records[len(out.Records)-1].Seq
-	} else {
-		out.LastSeq = opts.SinceSeq
+	return records
+}
+
+// lastSeqOf returns the cursor a caller should resume from: the seq of the last
+// drained record, or the caller-supplied sinceSeq when nothing was drained.
+func lastSeqOf(records []EventRecord, sinceSeq int64) int64 {
+	if len(records) > 0 {
+		return records[len(records)-1].Seq
 	}
-	return out
+	return sinceSeq
 }
 
 // Clear empties the ring without resetting the seq counter — callers using

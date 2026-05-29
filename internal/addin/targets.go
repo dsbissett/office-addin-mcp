@@ -65,24 +65,36 @@ func classifyOne(rawURL string, ordered []Surface, ct *ClassifiedTarget) Surface
 // heuristicSurface picks a label without manifest knowledge. Used as a
 // fallback when the manifest is missing or no surface pattern matches.
 func heuristicSurface(rawURL string) SurfaceType {
+	if hasAnyPrefix(rawURL, "about:", "devtools://", "chrome://", "edge://") {
+		return ""
+	}
+	lower := strings.ToLower(rawURL)
 	switch {
-	case rawURL == "":
-		return ""
-	case strings.HasPrefix(rawURL, "about:"),
-		strings.HasPrefix(rawURL, "devtools://"),
-		strings.HasPrefix(rawURL, "chrome://"),
-		strings.HasPrefix(rawURL, "edge://"):
-		return ""
-	case strings.Contains(strings.ToLower(rawURL), "dialog"):
+	case strings.Contains(lower, "dialog"):
 		return SurfaceDialog
-	case strings.Contains(strings.ToLower(rawURL), "functions.html"),
-		strings.Contains(strings.ToLower(rawURL), "/functions/"):
+	case isCustomFunctionsURL(lower):
 		return SurfaceCFRuntime
-	case strings.HasPrefix(rawURL, "http://"), strings.HasPrefix(rawURL, "https://"):
+	case hasAnyPrefix(rawURL, "http://", "https://"):
 		return SurfaceTaskpane
 	default:
 		return ""
 	}
+}
+
+// isCustomFunctionsURL reports whether a lowercased URL points at a
+// custom-functions runtime page.
+func isCustomFunctionsURL(lower string) bool {
+	return strings.Contains(lower, "functions.html") || strings.Contains(lower, "/functions/")
+}
+
+// hasAnyPrefix reports whether s begins with any of the given prefixes.
+func hasAnyPrefix(s string, prefixes ...string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // FindSurface returns the first classified target matching surface. ok=false

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // TargetInfo is a subset of CDP TargetInfo.
@@ -79,14 +80,13 @@ func FirstPageTarget(targets []TargetInfo) (TargetInfo, bool) {
 	return TargetInfo{}, false
 }
 
+var internalURLPrefixes = []string{"devtools://", "chrome://", "edge://"}
+
 func isInternalURL(u string) bool {
-	switch {
-	case len(u) >= 11 && u[:11] == "devtools://":
-		return true
-	case len(u) >= 9 && u[:9] == "chrome://":
-		return true
-	case len(u) >= 7 && u[:7] == "edge://":
-		return true
+	for _, p := range internalURLPrefixes {
+		if strings.HasPrefix(u, p) {
+			return true
+		}
 	}
 	return false
 }

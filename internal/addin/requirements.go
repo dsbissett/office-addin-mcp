@@ -46,16 +46,20 @@ var StandardRequirementSets = []RequirementSet{
 func MergeRequirementSets(base, extras []RequirementSet) []RequirementSet {
 	out := append([]RequirementSet(nil), base...)
 	for _, e := range extras {
-		seen := false
-		for _, b := range out {
-			if b.Name == e.Name && b.MinVersion == e.MinVersion {
-				seen = true
-				break
-			}
-		}
-		if !seen {
+		if !containsRequirement(out, e) {
 			out = append(out, e)
 		}
 	}
 	return out
+}
+
+// containsRequirement reports whether sets already holds a requirement with
+// the same Name and MinVersion as r.
+func containsRequirement(sets []RequirementSet, r RequirementSet) bool {
+	for _, s := range sets {
+		if s.Name == r.Name && s.MinVersion == r.MinVersion {
+			return true
+		}
+	}
+	return false
 }

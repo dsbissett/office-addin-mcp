@@ -57,6 +57,7 @@ func NetworkLog() tools.Tool {
 		Name:        "page.networkLog",
 		Description: "Drain correlated network request/response records for the active page. Auto-subscribes on first call; in-flight requests are not returned until they complete or fail.",
 		Schema:      json.RawMessage(networkLogSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runNetworkLog,
 	}
 }
@@ -66,12 +67,7 @@ func runNetworkLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	if p.MaxBuffer == 0 {
-		p.MaxBuffer = defaultMaxBuffer
-	}
-	if p.Limit == 0 {
-		p.Limit = defaultDrainLimit
-	}
+	applyNetworkLogDefaults(&p)
 
 	att, err := env.Attach(ctx, makeSelector(p.TargetID, p.URLPattern, p.Surface))
 	if err != nil {
@@ -94,6 +90,13 @@ func runNetworkLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 		)
 	}
 
+	return drainNetworkLog(att, buf, p)
+}
+
+// drainNetworkLog drains the ring buffer, applies the URL/status/failed filters,
+// and builds the response envelope. Draining happens before matcher compilation
+// to preserve the original side-effect ordering on a bad urlMatch.
+func drainNetworkLog(att *tools.AttachedTarget, buf *session.EventBuf, p networkLogParams) tools.Result {
 	res := buf.Drain(session.DrainOpts{
 		SinceSeq: p.SinceSeq,
 		Limit:    p.Limit,
@@ -106,28 +109,38 @@ func runNetworkLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	}
 
 	records, lastFiltered := filterNetworkRecords(res.Records, p, matcher)
-
 	out := networkLogResponse{
 		TargetID: att.Target.TargetID,
 		Records:  records,
-		LastSeq:  res.LastSeq,
+		LastSeq:  networkLogCursor(res.LastSeq, lastFiltered),
 		Dropped:  res.Dropped,
 		Capacity: buf.Max(),
 	}
-	// When filtering removes the tail, callers still want a cursor that
-	// covers everything they just saw. lastFiltered is the highest seq we
-	// actually inspected (filtered or returned), which is a safe cursor.
-	if lastFiltered > out.LastSeq {
-		out.LastSeq = lastFiltered
-	}
-	suffix := ""
-	if out.Dropped {
-		suffix = " (buffer overflowed; older entries dropped)"
-	}
 	return tools.OKWithSummary(
-		fmt.Sprintf("Drained %d network record(s)%s.", len(records), suffix),
+		fmt.Sprintf("Drained %d network record(s)%s.", len(records), overflowSuffix(out.Dropped)),
 		out,
 	)
+}
+
+// applyNetworkLogDefaults fills the zero-valued buffer/limit knobs with their
+// documented defaults.
+func applyNetworkLogDefaults(p *networkLogParams) {
+	if p.MaxBuffer == 0 {
+		p.MaxBuffer = defaultMaxBuffer
+	}
+	if p.Limit == 0 {
+		p.Limit = defaultDrainLimit
+	}
+}
+
+// networkLogCursor returns the cursor callers should carry forward. When
+// filtering removes the tail, lastFiltered is the highest seq we actually
+// inspected (filtered or returned), which is a safe cursor.
+func networkLogCursor(drained, lastFiltered int64) int64 {
+	if lastFiltered > drained {
+		return lastFiltered
+	}
+	return drained
 }
 
 type networkLogResponse struct {
@@ -178,16 +191,7 @@ func filterNetworkRecords(in []session.EventRecord, p networkLogParams, m *urlMa
 		if err := json.Unmarshal(r.Data, &rec); err != nil {
 			continue
 		}
-		if !m.match(rec.URL) {
-			continue
-		}
-		if p.FailedOnly && !rec.Failed {
-			continue
-		}
-		if p.StatusMin > 0 && rec.Status < p.StatusMin {
-			continue
-		}
-		if p.StatusMax > 0 && rec.Status > p.StatusMax {
+		if !networkRecordMatches(rec, p, m) {
 			continue
 		}
 		if !p.IncludeHeaders {
@@ -197,4 +201,24 @@ func filterNetworkRecords(in []session.EventRecord, p networkLogParams, m *urlMa
 		out = append(out, rec)
 	}
 	return out, lastSeq
+}
+
+// networkRecordMatches reports whether a decoded record passes the URL,
+// failed-only, and status-range filters from the request params.
+func networkRecordMatches(rec networkRecord, p networkLogParams, m *urlMatcher) bool {
+	return m.match(rec.URL) &&
+		(!p.FailedOnly || rec.Failed) &&
+		statusInRange(rec.Status, p.StatusMin, p.StatusMax)
+}
+
+// statusInRange reports whether status satisfies the optional inclusive
+// [min, max] bounds. A zero bound means "unbounded" on that side.
+func statusInRange(status, min, max int) bool {
+	if min > 0 && status < min {
+		return false
+	}
+	if max > 0 && status > max {
+		return false
+	}
+	return true
 }

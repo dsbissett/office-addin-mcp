@@ -40,31 +40,54 @@ func ParseURI(uri string) (*ParsedURI, error) {
 
 	// u.Host is the domain part; u.Path is everything after the domain.
 	// For office://excel/Book1/Sheet1, u.Host = "excel", u.Path = "/Book1/Sheet1"
-	if u.Host == "" {
-		return nil, fmt.Errorf("missing host in URI")
+	host, err := validateHost(u.Host)
+	if err != nil {
+		return nil, err
 	}
-
-	// Normalize host to lowercase for validation; store lowercase.
-	host := strings.ToLower(u.Host)
-	switch host {
-	case "excel", "word", "outlook", "pp", "onenote":
-		parsed.Host = host
-	default:
-		return nil, fmt.Errorf("unknown host: %q", u.Host)
-	}
-
-	// Split the path into segments (skip leading empty segment from leading /).
-	if u.Path != "" {
-		parts := strings.Split(u.Path, "/")
-		// parts[0] is empty due to leading /; skip it.
-		for i := 1; i < len(parts); i++ {
-			if parts[i] != "" {
-				parsed.Parts = append(parsed.Parts, parts[i])
-			}
-		}
-	}
+	parsed.Host = host
+	parsed.Parts = splitPathParts(u.Path)
 
 	return parsed, nil
+}
+
+// knownHosts is the set of recognized Office application hosts.
+var knownHosts = map[string]bool{
+	"excel":   true,
+	"word":    true,
+	"outlook": true,
+	"pp":      true,
+	"onenote": true,
+}
+
+// validateHost normalizes rawHost to lowercase and verifies it is a recognized
+// Office application. It returns the normalized host or an error.
+func validateHost(rawHost string) (string, error) {
+	if rawHost == "" {
+		return "", fmt.Errorf("missing host in URI")
+	}
+
+	host := strings.ToLower(rawHost)
+	if !knownHosts[host] {
+		return "", fmt.Errorf("unknown host: %q", rawHost)
+	}
+
+	return host, nil
+}
+
+// splitPathParts splits a URL path into non-empty slash-delimited segments,
+// skipping the leading empty segment produced by the leading slash.
+func splitPathParts(path string) []string {
+	if path == "" {
+		return nil
+	}
+
+	var parts []string
+	for _, seg := range strings.Split(path, "/") {
+		if seg != "" {
+			parts = append(parts, seg)
+		}
+	}
+	return parts
 }
 
 // String returns the canonical office:// URI form.

@@ -31,6 +31,7 @@ func RunScript() tools.Tool {
 		Name:        "excel.runScript",
 		Description: "Run an arbitrary async JS body inside Excel.run; the body returns a JSON-serializable value. Powerful — agents can compose ad-hoc Excel.js operations without a Go-side tool.",
 		Schema:      json.RawMessage(runScriptSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true), OpenWorldHint: tools.BoolPtr(true)},
 		Run:         runRunScript,
 	}
 }

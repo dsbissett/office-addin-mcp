@@ -40,6 +40,26 @@ const querySchema = `{
   "additionalProperties": false
 }`
 
+// queryOutputSchema describes the success Data shape returned by excel.query.
+// Top-level properties match the excel_query.js payload (both the loaded-grid
+// and the truncated bail-out paths); nested row objects are left permissive.
+const queryOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "excel.query result",
+  "type": "object",
+  "properties": {
+    "address":     {"type": "string"},
+    "rowCount":    {"type": "integer"},
+    "columnCount": {"type": "integer"},
+    "headers":     {"type": "array", "items": {"type": "string"}},
+    "truncated":   {"type": "boolean"},
+    "rows":        {"type": ["array", "null"]},
+    "count":       {"type": "integer"},
+    "limited":     {"type": "boolean"}
+  },
+  "required": ["address", "rowCount", "columnCount", "truncated", "count"]
+}`
+
 type queryParams struct {
 	Address  string          `json:"address"`
 	Sheet    string          `json:"sheet,omitempty"`
@@ -52,11 +72,12 @@ type queryParams struct {
 // Query returns the excel.query tool definition.
 func Query() tools.Tool {
 	return tools.Tool{
-		Name:        "excel.query",
-		Description: "Run a JSON-shaped filter/project/groupBy/agg query against an Excel range. Returns a small summarized answer instead of the raw grid.",
-		Schema:      json.RawMessage(querySchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runQuery,
+		Name:         "excel.query",
+		Description:  "Run a JSON-shaped filter/project/groupBy/agg query against an Excel range. Returns a small summarized answer instead of the raw grid.",
+		Schema:       json.RawMessage(querySchema),
+		OutputSchema: json.RawMessage(queryOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runQuery,
 	}
 }
 
@@ -65,27 +86,33 @@ func runQuery(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
+	return runPayloadSum(ctx, env, p.selector(), "excel.query", p.args(), func(data any) string {
+		return querySummary(data, p.Address)
+	})
+}
+
+// args builds the Office.js argument map for excel.query.
+func (p queryParams) args() map[string]any {
 	args := map[string]any{"address": p.Address}
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	if len(p.Headers) > 0 {
-		args["headers"] = json.RawMessage(p.Headers)
-	}
+	setRawArg(args, "headers", p.Headers)
 	if p.MaxCells > 0 {
 		args["maxCells"] = p.MaxCells
 	}
-	if len(p.Query) > 0 {
-		args["query"] = json.RawMessage(p.Query)
+	setRawArg(args, "query", p.Query)
+	return args
+}
+
+// querySummary describes the query result row count or a truncation notice.
+func querySummary(data any, address string) string {
+	if boolField(data, "truncated") {
+		return fmt.Sprintf("Range %s exceeds maxCells; query not run.", address)
 	}
-	return runPayloadSum(ctx, env, p.selector(), "excel.query", args, func(data any) string {
-		if boolField(data, "truncated") {
-			return fmt.Sprintf("Range %s exceeds maxCells; query not run.", p.Address)
-		}
-		count := numberField(data, "count")
-		if boolField(data, "limited") {
-			return fmt.Sprintf("Query returned %d row(s) (limited).", count)
-		}
-		return fmt.Sprintf("Query returned %d row(s).", count)
-	})
+	count := numberField(data, "count")
+	if boolField(data, "limited") {
+		return fmt.Sprintf("Query returned %d row(s) (limited).", count)
+	}
+	return fmt.Sprintf("Query returned %d row(s).", count)
 }

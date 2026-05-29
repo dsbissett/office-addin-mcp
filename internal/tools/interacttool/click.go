@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/dsbissett/office-addin-mcp/internal/session"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
 
@@ -39,6 +40,7 @@ func Click() tools.Tool {
 		Name:        "page.click",
 		Description: "Click a snapshot UID by dispatching mouse press+release at its box-model center.",
 		Schema:      json.RawMessage(clickSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true)},
 		Run:         runClick,
 	}
 }
@@ -48,14 +50,7 @@ func runClick(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	button := p.Button
-	if button == "" {
-		button = "left"
-	}
-	clickCount := p.ClickCount
-	if clickCount <= 0 {
-		clickCount = 1
-	}
+	button, clickCount := clickDefaults(p)
 
 	att, err := env.Attach(ctx, p.selector())
 	if err != nil {
@@ -66,6 +61,36 @@ func runClick(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 		return lookupRes
 	}
 
+	if res := dispatchClick(ctx, att, x, y, button, clickCount); res.Err != nil {
+		return res
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("%s %s (%s).", clickVerb(clickCount), nodeLabel(node), p.UID),
+		struct {
+			UID string  `json:"uid"`
+			X   float64 `json:"x"`
+			Y   float64 `json:"y"`
+		}{UID: p.UID, X: x, Y: y},
+	)
+}
+
+// clickDefaults resolves the optional button/clickCount params to their
+// effective values: button defaults to "left", clickCount to 1.
+func clickDefaults(p clickParams) (button string, clickCount int) {
+	button = p.Button
+	if button == "" {
+		button = "left"
+	}
+	clickCount = p.ClickCount
+	if clickCount <= 0 {
+		clickCount = 1
+	}
+	return button, clickCount
+}
+
+// dispatchClick sends the mousePressed then mouseReleased events at (x, y). On
+// success it returns the zero Result; on CDP failure a classified error.
+func dispatchClick(ctx context.Context, att *tools.AttachedTarget, x, y float64, button string, clickCount int) tools.Result {
 	common := map[string]any{
 		"x":          x,
 		"y":          y,
@@ -74,32 +99,34 @@ func runClick(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	}
 	pressed := mergeMap(common, map[string]any{"type": "mousePressed"})
 	released := mergeMap(common, map[string]any{"type": "mouseReleased"})
-
 	if _, err := att.Conn.Send(ctx, att.SessionID, "Input.dispatchMouseEvent", pressed); err != nil {
 		return tools.ClassifyCDPErr("mouse_press_failed", err)
 	}
 	if _, err := att.Conn.Send(ctx, att.SessionID, "Input.dispatchMouseEvent", released); err != nil {
 		return tools.ClassifyCDPErr("mouse_release_failed", err)
 	}
-	label := node.Role
+	return tools.Result{}
+}
+
+// nodeLabel renders a snapshot node as `role "name"`, falling back to the bare
+// role when the node has no accessible name.
+func nodeLabel(node *session.SnapshotNode) string {
 	if node.Name != "" {
-		label = fmt.Sprintf("%s %q", node.Role, node.Name)
+		return fmt.Sprintf("%s %q", node.Role, node.Name)
 	}
-	verb := "Clicked"
+	return node.Role
+}
+
+// clickVerb maps a click count to its summary verb.
+func clickVerb(clickCount int) string {
 	switch clickCount {
 	case 2:
-		verb = "Double-clicked"
+		return "Double-clicked"
 	case 3:
-		verb = "Triple-clicked"
+		return "Triple-clicked"
+	default:
+		return "Clicked"
 	}
-	return tools.OKWithSummary(
-		fmt.Sprintf("%s %s (%s).", verb, label, p.UID),
-		struct {
-			UID string  `json:"uid"`
-			X   float64 `json:"x"`
-			Y   float64 `json:"y"`
-		}{UID: p.UID, X: x, Y: y},
-	)
 }
 
 func mergeMap(a, b map[string]any) map[string]any {

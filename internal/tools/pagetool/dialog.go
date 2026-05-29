@@ -39,6 +39,9 @@ func HandleDialog() tools.Tool {
 		Description: "Accept or dismiss a pending native browser dialog (alert/confirm/prompt/beforeunload).",
 		Schema:      json.RawMessage(handleDialogSchema),
 		Run:         runHandleDialog,
+		// Destructive UI interaction: resolves a pending dialog, driving app
+		// flow. Not idempotent — there is no dialog to handle on a repeat.
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true)},
 	}
 }
 
@@ -51,24 +54,40 @@ func runHandleDialog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv
 	if err != nil {
 		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
+	if res, ok := sendHandleDialog(ctx, p, att, env); !ok {
+		return res
+	}
+	return dialogResult(p.Accept)
+}
+
+// sendHandleDialog enables the Page domain and drives
+// Page.handleJavaScriptDialog with the accept/promptText args. On failure it
+// returns ok=false with the error envelope to surface.
+func sendHandleDialog(ctx context.Context, p handleDialogParams, att *tools.AttachedTarget, env *tools.RunEnv) (tools.Result, bool) {
 	if err := env.EnsureEnabled(ctx, att.SessionID, "Page"); err != nil {
-		return tools.ClassifyCDPErr("enable_page_failed", err)
+		return tools.ClassifyCDPErr("enable_page_failed", err), false
 	}
 	args := map[string]any{"accept": p.Accept}
 	if p.PromptText != "" {
 		args["promptText"] = p.PromptText
 	}
 	if _, err := att.Conn.Send(ctx, att.SessionID, "Page.handleJavaScriptDialog", args); err != nil {
-		return tools.ClassifyCDPErr("handle_dialog_failed", err)
+		return tools.ClassifyCDPErr("handle_dialog_failed", err), false
 	}
+	return tools.Result{}, true
+}
+
+// dialogResult shapes the OK envelope, choosing the verb from whether the
+// dialog was accepted.
+func dialogResult(accept bool) tools.Result {
 	verb := "Dismissed"
-	if p.Accept {
+	if accept {
 		verb = "Accepted"
 	}
 	return tools.OKWithSummary(
 		verb+" native browser dialog.",
 		struct {
 			Accepted bool `json:"accepted"`
-		}{Accepted: p.Accept},
+		}{Accepted: accept},
 	)
 }

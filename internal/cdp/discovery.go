@@ -30,25 +30,34 @@ func ResolveBrowserWSURL(ctx context.Context, browserURL string) (string, error)
 	}
 	u.Path = strings.TrimSuffix(u.Path, "/") + "/json/version"
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	v, err := fetchBrowserVersion(ctx, u.String())
 	if err != nil {
 		return "", err
-	}
-	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("probe %s: %w", u.String(), err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("probe %s: status %d", u.String(), resp.StatusCode)
-	}
-	var v BrowserVersion
-	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
-		return "", fmt.Errorf("decode %s: %w", u.String(), err)
 	}
 	if v.WebSocketDebuggerURL == "" {
 		return "", fmt.Errorf("probe %s: missing webSocketDebuggerUrl", u.String())
 	}
 	return v.WebSocketDebuggerURL, nil
+}
+
+// fetchBrowserVersion GETs versionURL and decodes the /json/version payload.
+func fetchBrowserVersion(ctx context.Context, versionURL string) (BrowserVersion, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, versionURL, nil)
+	if err != nil {
+		return BrowserVersion{}, err
+	}
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return BrowserVersion{}, fmt.Errorf("probe %s: %w", versionURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return BrowserVersion{}, fmt.Errorf("probe %s: status %d", versionURL, resp.StatusCode)
+	}
+	var v BrowserVersion
+	if err := json.NewDecoder(resp.Body).Decode(&v); err != nil {
+		return BrowserVersion{}, fmt.Errorf("decode %s: %w", versionURL, err)
+	}
+	return v, nil
 }

@@ -25,6 +25,7 @@ func ReadNotebooks() tools.Tool {
 		Name:        "onenote.readNotebooks",
 		Description: "List every notebook visible to the OneNote application: id and name.",
 		Schema:      json.RawMessage(noSelectorOnlySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadNotebooks,
 	}
 }
@@ -47,6 +48,7 @@ func ReadSections() tools.Tool {
 		Name:        "onenote.readSections",
 		Description: "List sections in the active notebook: id and name.",
 		Schema:      json.RawMessage(noSelectorOnlySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadSections,
 	}
 }
@@ -74,6 +76,7 @@ func ReadPages() tools.Tool {
 		Name:        "onenote.readPages",
 		Description: "List pages in the active section: id and title.",
 		Schema:      json.RawMessage(noSelectorOnlySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadPages,
 	}
 }
@@ -101,6 +104,7 @@ func ReadPage() tools.Tool {
 		Name:        "onenote.readPage",
 		Description: "Read the active page: title and content list (id + type per content item).",
 		Schema:      json.RawMessage(noSelectorOnlySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadPage,
 	}
 }
@@ -143,6 +147,7 @@ func AddPage() tools.Tool {
 		Name:        "onenote.addPage",
 		Description: "Append a new page to the active section with the given title.",
 		Schema:      json.RawMessage(addPageSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(false)},
 		Run:         runAddPage,
 	}
 }

@@ -32,6 +32,7 @@ func RunScript() tools.Tool {
 		Name:        "onenote.runScript",
 		Description: "Run an arbitrary async JS body inside OneNote.run; the body returns a JSON-serializable value.",
 		Schema:      json.RawMessage(runScriptSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true), OpenWorldHint: tools.BoolPtr(true)},
 		Run:         runRunScript,
 	}
 }

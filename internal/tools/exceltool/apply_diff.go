@@ -48,6 +48,7 @@ func ApplyDiff() tools.Tool {
 		Name:        "excel.applyDiff",
 		Description: "Apply a batch of cell/range patches (values, formulas, number formats) in one Excel.run. One CDP round-trip per call.",
 		Schema:      json.RawMessage(applyDiffSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runApplyDiff,
 	}
 }

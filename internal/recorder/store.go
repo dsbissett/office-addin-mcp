@@ -132,42 +132,70 @@ func (s *Store) LoadAll() (map[string]*Macro, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := os.ReadDir(s.dir)
+	entries, err := s.readMacroDir()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return s.cache, nil
-		}
-		return nil, fmt.Errorf("recorder.LoadAll: readdir: %w", err)
+		return nil, err
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() || !json.Valid([]byte(entry.Name()+"=true")) {
-			continue
+		if err := s.loadEntry(entry); err != nil {
+			return nil, err
 		}
-		name := entry.Name()
-		if !isJSON(name) {
-			continue
-		}
-		macroName := name[:len(name)-5] // Strip .json
-
-		if _, ok := s.cache[macroName]; ok {
-			continue
-		}
-
-		path := filepath.Join(s.dir, name)
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, fmt.Errorf("recorder.LoadAll: read %q: %w", name, err)
-		}
-		var m Macro
-		if err := json.Unmarshal(data, &m); err != nil {
-			return nil, fmt.Errorf("recorder.LoadAll: unmarshal %q: %w", name, err)
-		}
-		m.Name = macroName
-		s.cache[macroName] = &m
 	}
 
 	return s.cache, nil
+}
+
+// readMacroDir lists the macro directory. A missing directory is treated as an
+// empty directory (returns nil entries, no error).
+func (s *Store) readMacroDir() ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("recorder.LoadAll: readdir: %w", err)
+	}
+	return entries, nil
+}
+
+// loadEntry loads a single directory entry into the cache when it names an
+// uncached macro file. Directories, non-.json files, and already-cached macros
+// are skipped without error.
+func (s *Store) loadEntry(entry os.DirEntry) error {
+	if entry.IsDir() {
+		return nil
+	}
+	name := entry.Name()
+	if !isJSON(name) {
+		return nil
+	}
+	macroName := name[:len(name)-5] // Strip .json
+	if _, ok := s.cache[macroName]; ok {
+		return nil
+	}
+
+	m, err := s.readMacroFile(name)
+	if err != nil {
+		return err
+	}
+	m.Name = macroName
+	s.cache[macroName] = m
+	return nil
+}
+
+// readMacroFile reads and unmarshals a single macro file by its base name.
+func (s *Store) readMacroFile(name string) (*Macro, error) {
+	path := filepath.Join(s.dir, name)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("recorder.LoadAll: read %q: %w", name, err)
+	}
+	var m Macro
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, fmt.Errorf("recorder.LoadAll: unmarshal %q: %w", name, err)
+	}
+	return &m, nil
 }
 
 // Get returns a macro by name, or (nil, false).

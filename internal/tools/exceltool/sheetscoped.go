@@ -23,6 +23,7 @@ func ListComments() tools.Tool {
 		Name:        "excel.listComments",
 		Description: "List comments and replies on a worksheet: author, content, timestamp, and cell address.",
 		Schema:      json.RawMessage(optionalSheetSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListComments,
 	}
 }
@@ -47,6 +48,7 @@ func ListShapes() tools.Tool {
 		Name:        "excel.listShapes",
 		Description: "List shapes (including images) on a worksheet: name, id, type, position, size, visibility.",
 		Schema:      json.RawMessage(optionalSheetSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListShapes,
 	}
 }

@@ -32,6 +32,7 @@ func List() tools.Tool {
 		Description: "List CDP page targets classified by manifest surface. Skips service workers and custom-functions runtimes.",
 		Schema:      json.RawMessage(listSchema),
 		Run:         runList,
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 	}
 }
 
@@ -48,22 +49,9 @@ func runList(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.
 	if err != nil {
 		return tools.ClassifyCDPErr("get_targets_failed", err)
 	}
-	var manifest *addin.Manifest
-	if env.Manifest != nil {
-		manifest = env.Manifest()
-	}
+	manifest := resolveManifest(env)
 	classified := addin.ClassifyTargets(targets, manifest)
-
-	out := make([]addin.ClassifiedTarget, 0, len(classified))
-	for _, c := range classified {
-		if c.Type != "page" {
-			continue
-		}
-		if !p.IncludeInternal && tools.IsInternalURL(c.URL) {
-			continue
-		}
-		out = append(out, c)
-	}
+	out := filterPageTargets(classified, p.IncludeInternal)
 	return tools.OKWithSummary(
 		fmt.Sprintf("Listed %d page target(s).", len(out)),
 		struct {
@@ -71,4 +59,37 @@ func runList(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.
 			HasManifest bool                     `json:"hasManifest"`
 		}{Pages: out, HasManifest: manifest != nil},
 	)
+}
+
+// resolveManifest returns the active manifest, or nil when the env supplies no
+// manifest accessor.
+func resolveManifest(env *tools.RunEnv) *addin.Manifest {
+	if env.Manifest == nil {
+		return nil
+	}
+	return env.Manifest()
+}
+
+// filterPageTargets keeps only type=page targets, dropping internal URLs unless
+// includeInternal is set. The returned slice is never nil so the envelope
+// encodes an empty array rather than null.
+func filterPageTargets(classified []addin.ClassifiedTarget, includeInternal bool) []addin.ClassifiedTarget {
+	out := make([]addin.ClassifiedTarget, 0, len(classified))
+	for _, c := range classified {
+		if keepPageTarget(c, includeInternal) {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// keepPageTarget reports whether a classified target survives the list filter.
+func keepPageTarget(c addin.ClassifiedTarget, includeInternal bool) bool {
+	if c.Type != "page" {
+		return false
+	}
+	if !includeInternal && tools.IsInternalURL(c.URL) {
+		return false
+	}
+	return true
 }

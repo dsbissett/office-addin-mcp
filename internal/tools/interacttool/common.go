@@ -25,11 +25,21 @@ func nodeCenter(ctx context.Context, env *tools.RunEnv, att *tools.AttachedTarge
 	if err := env.EnsureEnabled(ctx, att.SessionID, "DOM"); err != nil {
 		return 0, 0, nil, tools.ClassifyCDPErr("enable_dom_failed", err)
 	}
+	x, y, res := boxModelCenter(ctx, att, node.BackendNodeID)
+	if res.Err != nil {
+		return 0, 0, nil, res
+	}
+	return x, y, node, tools.Result{}
+}
+
+// boxModelCenter fetches DOM.getBoxModel for a backendNodeId and returns the
+// center of its content quad in CSS pixels.
+func boxModelCenter(ctx context.Context, att *tools.AttachedTarget, backendNodeID int) (float64, float64, tools.Result) {
 	rawBox, err := att.Conn.Send(ctx, att.SessionID, "DOM.getBoxModel", map[string]any{
-		"backendNodeId": node.BackendNodeID,
+		"backendNodeId": backendNodeID,
 	})
 	if err != nil {
-		return 0, 0, nil, tools.ClassifyCDPErr("get_box_model_failed", err)
+		return 0, 0, tools.ClassifyCDPErr("get_box_model_failed", err)
 	}
 	var box struct {
 		Model struct {
@@ -37,14 +47,14 @@ func nodeCenter(ctx context.Context, env *tools.RunEnv, att *tools.AttachedTarge
 		} `json:"model"`
 	}
 	if err := json.Unmarshal(rawBox, &box); err != nil {
-		return 0, 0, nil, tools.Fail(tools.CategoryProtocol, "box_decode", err.Error(), false)
+		return 0, 0, tools.Fail(tools.CategoryProtocol, "box_decode", err.Error(), false)
 	}
 	if len(box.Model.Content) < 8 {
-		return 0, 0, nil, tools.Fail(tools.CategoryProtocol, "box_quad_invalid", "content quad too short", false)
+		return 0, 0, tools.Fail(tools.CategoryProtocol, "box_quad_invalid", "content quad too short", false)
 	}
 	x := (box.Model.Content[0] + box.Model.Content[4]) / 2
 	y := (box.Model.Content[1] + box.Model.Content[5]) / 2
-	return x, y, node, tools.Result{}
+	return x, y, tools.Result{}
 }
 
 func lookupNode(env *tools.RunEnv, att *tools.AttachedTarget, uid string) (*session.SnapshotNode, tools.Result) {

@@ -27,6 +27,21 @@ type Provider struct {
 	Cache *doccache.Store
 }
 
+// readBuilder maps a host to the function that produces its tool name and params.
+// Each builder is a method value bound to the receiving Provider in Read.
+type readBuilder func(*ParsedURI) (string, map[string]any)
+
+// readBuilders returns the host-keyed dispatch table for Read.
+func (p *Provider) readBuilders() map[string]readBuilder {
+	return map[string]readBuilder{
+		"excel":   p.readExcel,
+		"word":    p.readWord,
+		"outlook": p.readOutlook,
+		"pp":      p.readPowerPoint,
+		"onenote": p.readOneNote,
+	}
+}
+
 // Read dispatches the appropriate tool to read a resource URI and returns
 // its content. Returns ResourceNotFound error if the URI is malformed or
 // the underlying tool dispatch fails.
@@ -36,39 +51,15 @@ func (p *Provider) Read(ctx context.Context, uri string) (*ReadResult, error) {
 		return nil, fmt.Errorf("invalid URI: %w", err)
 	}
 
-	var toolName string
-	var params map[string]any
-
-	switch parsed.Host {
-	case "excel":
-		toolName, params = p.readExcel(parsed)
-	case "word":
-		toolName, params = p.readWord(parsed)
-	case "outlook":
-		toolName, params = p.readOutlook(parsed)
-	case "pp":
-		toolName, params = p.readPowerPoint(parsed)
-	case "onenote":
-		toolName, params = p.readOneNote(parsed)
-	default:
+	build, ok := p.readBuilders()[parsed.Host]
+	if !ok {
 		return nil, fmt.Errorf("unknown host: %s", parsed.Host)
 	}
+	toolName, params := build(parsed)
 
-	// Dispatch the tool.
-	paramsJSON, err := json.Marshal(params)
+	env, err := p.dispatchRead(ctx, toolName, params)
 	if err != nil {
-		return nil, fmt.Errorf("marshal params: %w", err)
-	}
-
-	req := tools.Request{
-		Tool:     toolName,
-		Params:   paramsJSON,
-		Endpoint: p.Endpoint(),
-	}
-	env := p.Disp.Dispatch(ctx, req)
-
-	if !env.OK {
-		return nil, fmt.Errorf("tool dispatch failed: %s", env.Error.Message)
+		return nil, err
 	}
 
 	// Convert result to ReadResult.
@@ -81,6 +72,28 @@ func (p *Provider) Read(ctx context.Context, uri string) (*ReadResult, error) {
 		Text:     string(dataJSON),
 		MIMEType: "application/json",
 	}, nil
+}
+
+// dispatchRead marshals params, dispatches the named tool, and validates the
+// returned envelope. It returns the successful envelope or a wrapped error.
+func (p *Provider) dispatchRead(ctx context.Context, toolName string, params map[string]any) (tools.Envelope, error) {
+	paramsJSON, err := json.Marshal(params)
+	if err != nil {
+		return tools.Envelope{}, fmt.Errorf("marshal params: %w", err)
+	}
+
+	req := tools.Request{
+		Tool:     toolName,
+		Params:   paramsJSON,
+		Endpoint: p.Endpoint(),
+	}
+	env := p.Disp.Dispatch(ctx, req)
+
+	if !env.OK {
+		return tools.Envelope{}, fmt.Errorf("tool dispatch failed: %s", env.Error.Message)
+	}
+
+	return env, nil
 }
 
 // readExcel returns the tool and params for reading an Excel range.

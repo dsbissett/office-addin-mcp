@@ -35,6 +35,7 @@ func RebuildSlideFromOutline() tools.Tool {
 		Name:        "powerpoint.rebuildSlideFromOutline",
 		Description: "Rewrite a slide's title and/or body bullets in one PowerPoint.run. Identifies title vs body shape by placeholder name conventions.",
 		Schema:      json.RawMessage(rebuildSlideFromOutlineSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runRebuildSlideFromOutline,
 	}
 }
@@ -47,6 +48,15 @@ func runRebuildSlideFromOutline(ctx context.Context, raw json.RawMessage, env *t
 	if p.Title == nil && p.Bullets == nil {
 		return tools.Fail(tools.CategoryValidation, "nothing_to_set", "rebuildSlideFromOutline requires at least one of: title, bullets", false)
 	}
+	args := outlineToArgs(p)
+	return runPayloadSum(ctx, env, p.Selector(), "powerpoint.rebuildSlideFromOutline", args, func(data any) string {
+		return fmt.Sprintf("Rebuilt slide %d (title %v, %d bullet(s)).", p.SlideIndex, p.Title != nil, bulletsSetCount(data))
+	})
+}
+
+// outlineToArgs maps the validated outline params to the PowerPoint.run argument map,
+// including only the fields the caller asked to change.
+func outlineToArgs(p rebuildSlideFromOutlineParams) map[string]any {
 	args := map[string]any{"slideIndex": p.SlideIndex}
 	if p.Title != nil {
 		args["title"] = *p.Title
@@ -54,12 +64,13 @@ func runRebuildSlideFromOutline(ctx context.Context, raw json.RawMessage, env *t
 	if p.Bullets != nil {
 		args["bullets"] = *p.Bullets
 	}
-	return runPayloadSum(ctx, env, p.Selector(), "powerpoint.rebuildSlideFromOutline", args, func(data any) string {
-		idx := p.SlideIndex
-		bullets := 0
-		if n, ok := numberField(data, "bulletsSet"); ok {
-			bullets = int(n)
-		}
-		return fmt.Sprintf("Rebuilt slide %d (title %v, %d bullet(s)).", idx, p.Title != nil, bullets)
-	})
+	return args
+}
+
+// bulletsSetCount reads the bulletsSet field from the payload result, defaulting to 0.
+func bulletsSetCount(data any) int {
+	if n, ok := numberField(data, "bulletsSet"); ok {
+		return int(n)
+	}
+	return 0
 }

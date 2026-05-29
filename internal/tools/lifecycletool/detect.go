@@ -52,34 +52,51 @@ func runDetect(_ context.Context, raw json.RawMessage, _ *tools.RunEnv) tools.Re
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	cwd := p.CWD
-	if cwd == "" {
-		var err error
-		cwd, err = os.Getwd()
-		if err != nil {
-			return tools.Fail(tools.CategoryInternal, "getcwd_failed", err.Error(), false)
-		}
+	cwd, errRes := resolveCwd(p.CWD)
+	if errRes != nil {
+		return *errRes
 	}
 	project, err := launch.DetectAddin(cwd)
 	if err != nil {
-		if errors.Is(err, launch.ErrNoProject) {
-			return tools.Result{
-				Err: &tools.EnvelopeError{
-					Code:     "addin_not_found",
-					Message:  err.Error(),
-					Category: tools.CategoryNotFound,
-					Details:  map[string]any{"cwd": cwd},
-				},
-				Summary: "No add-in project found at or above " + cwd + ".",
-			}
-		}
-		return tools.Result{
-			Err:     &tools.EnvelopeError{Code: "detect_failed", Message: err.Error(), Category: tools.CategoryInternal},
-			Summary: "Detect failed: " + err.Error(),
-		}
+		return detectErrToResult(err, cwd)
 	}
 	return tools.OKWithSummary(
 		"Detected "+string(project.ManifestKind)+" add-in at "+project.Root+".",
 		project,
 	)
+}
+
+// resolveCwd returns the working directory to detect from: the caller-supplied
+// value when non-empty, else os.Getwd(). On a getwd failure it returns a
+// non-nil *tools.Result the caller should return verbatim.
+func resolveCwd(cwd string) (string, *tools.Result) {
+	if cwd != "" {
+		return cwd, nil
+	}
+	resolved, err := os.Getwd()
+	if err != nil {
+		res := tools.Fail(tools.CategoryInternal, "getcwd_failed", err.Error(), false)
+		return "", &res
+	}
+	return resolved, nil
+}
+
+// detectErrToResult maps a DetectAddin failure onto the envelope: ErrNoProject
+// becomes a not_found addin_not_found, anything else an internal detect_failed.
+func detectErrToResult(err error, cwd string) tools.Result {
+	if errors.Is(err, launch.ErrNoProject) {
+		return tools.Result{
+			Err: &tools.EnvelopeError{
+				Code:     "addin_not_found",
+				Message:  err.Error(),
+				Category: tools.CategoryNotFound,
+				Details:  map[string]any{"cwd": cwd},
+			},
+			Summary: "No add-in project found at or above " + cwd + ".",
+		}
+	}
+	return tools.Result{
+		Err:     &tools.EnvelopeError{Code: "detect_failed", Message: err.Error(), Category: tools.CategoryInternal},
+		Summary: "Detect failed: " + err.Error(),
+	}
 }

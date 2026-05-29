@@ -51,14 +51,22 @@ func pumpConsole(buf *session.EventBuf, cdpSID string, ch <-chan cdpproto.Event)
 		if ev.SessionID != cdpSID {
 			continue
 		}
-		switch ev.Method {
-		case "Runtime.consoleAPICalled":
-			buf.Append(consoleKindFromParams(ev.Params), normalizeConsoleAPI(ev.Params))
-		case "Runtime.exceptionThrown":
-			buf.Append("exception", normalizeException(ev.Params))
-		case "Log.entryAdded":
-			buf.Append("log.entry", normalizeLogEntry(ev.Params))
-		}
+		dispatchConsoleEvent(buf, ev)
+	}
+}
+
+// dispatchConsoleEvent appends a single console-channel event to the ring
+// buffer in normalized form. Split from the pump loop so the loop stays a thin
+// receive-and-filter; ordering is preserved because each event is handled
+// synchronously in receive order.
+func dispatchConsoleEvent(buf *session.EventBuf, ev cdpproto.Event) {
+	switch ev.Method {
+	case "Runtime.consoleAPICalled":
+		buf.Append(consoleKindFromParams(ev.Params), normalizeConsoleAPI(ev.Params))
+	case "Runtime.exceptionThrown":
+		buf.Append("exception", normalizeException(ev.Params))
+	case "Log.entryAdded":
+		buf.Append("log.entry", normalizeLogEntry(ev.Params))
 	}
 }
 
@@ -172,26 +180,57 @@ func normalizeLogEntry(raw json.RawMessage) json.RawMessage {
 
 // argText renders a CDP RemoteObject arg as a human-readable string.
 func argText(a cdpArg) string {
+	if s, ok := typedArgText(a); ok {
+		return s
+	}
+	return fallbackArgText(a)
+}
+
+// typedArgText renders the type-specific representation of an arg, returning
+// ok=false when no type-specific rendering applies and the caller should fall
+// back to the generic value/description rendering.
+func typedArgText(a cdpArg) (string, bool) {
 	switch a.Type {
 	case "string":
-		var s string
-		if err := json.Unmarshal(a.Value, &s); err == nil {
-			return s
-		}
+		return stringArgText(a)
 	case "undefined":
-		return "undefined"
+		return "undefined", true
 	case "object":
-		if a.Subtype == "null" {
-			return "null"
-		}
-		if a.Description != "" {
-			return a.Description
-		}
+		return objectArgText(a)
 	case "function":
-		if a.Description != "" {
-			return a.Description
-		}
+		return descriptionArgText(a)
 	}
+	return "", false
+}
+
+// stringArgText decodes a string-typed arg's JSON value.
+func stringArgText(a cdpArg) (string, bool) {
+	var s string
+	if err := json.Unmarshal(a.Value, &s); err == nil {
+		return s, true
+	}
+	return "", false
+}
+
+// objectArgText renders an object-typed arg (null subtype or a description).
+func objectArgText(a cdpArg) (string, bool) {
+	if a.Subtype == "null" {
+		return "null", true
+	}
+	return descriptionArgText(a)
+}
+
+// descriptionArgText returns the arg description when present.
+func descriptionArgText(a cdpArg) (string, bool) {
+	if a.Description != "" {
+		return a.Description, true
+	}
+	return "", false
+}
+
+// fallbackArgText renders an arg with no type-specific representation, in the
+// order: unserializable value, raw value, description.
+func fallbackArgText(a cdpArg) string {
 	if a.UnserializableValue != "" {
 		return a.UnserializableValue
 	}
@@ -317,16 +356,25 @@ func pumpNetwork(buf *session.EventBuf, cdpSID string, ch <-chan cdpproto.Event)
 		if ev.SessionID != cdpSID {
 			continue
 		}
-		switch ev.Method {
-		case "Network.requestWillBeSent":
-			handleWillSend(pending, ev.Params)
-		case "Network.responseReceived":
-			handleRespRecv(pending, ev.Params)
-		case "Network.loadingFinished":
-			finalizeFinished(buf, pending, ev.Params)
-		case "Network.loadingFailed":
-			finalizeFailed(buf, pending, ev.Params)
-		}
+		dispatchNetworkEvent(buf, pending, ev)
+	}
+}
+
+// dispatchNetworkEvent routes a single network-channel event to its handler.
+// Split from the pump loop so the loop stays a thin receive-and-filter; the
+// pending FIFO is owned by the loop and threaded in, so cross-event
+// correlation and ordering are preserved (events are handled synchronously in
+// receive order).
+func dispatchNetworkEvent(buf *session.EventBuf, pending *pendingFifo, ev cdpproto.Event) {
+	switch ev.Method {
+	case "Network.requestWillBeSent":
+		handleWillSend(pending, ev.Params)
+	case "Network.responseReceived":
+		handleRespRecv(pending, ev.Params)
+	case "Network.loadingFinished":
+		finalizeFinished(buf, pending, ev.Params)
+	case "Network.loadingFailed":
+		finalizeFailed(buf, pending, ev.Params)
 	}
 }
 

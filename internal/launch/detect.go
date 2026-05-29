@@ -186,13 +186,7 @@ func detectDevServer(pkg *packageJSON) *DevServer {
 	if pkg == nil || len(pkg.Scripts) == 0 {
 		return nil
 	}
-	var script string
-	for _, name := range []string{"dev-server", "dev:server", "dev"} {
-		if v, ok := pkg.Scripts[name]; ok && v != "" {
-			script = name
-			break
-		}
-	}
+	script := pickDevScript(pkg.Scripts)
 	if script == "" {
 		return nil
 	}
@@ -203,22 +197,48 @@ func detectDevServer(pkg *packageJSON) *DevServer {
 	return &DevServer{Script: script, Port: port}
 }
 
+// pickDevScript returns the first non-empty dev-server script name from the
+// preference order, or "" when none is declared.
+func pickDevScript(scripts map[string]string) string {
+	for _, name := range []string{"dev-server", "dev:server", "dev"} {
+		if v, ok := scripts[name]; ok && v != "" {
+			return name
+		}
+	}
+	return ""
+}
+
 // decodePortValue accepts either a JSON number or a numeric string for
 // package.json#config.dev_server_port (the Yeoman generator emits a string).
 func decodePortValue(raw json.RawMessage) (int, bool) {
 	if len(raw) == 0 {
 		return 0, false
 	}
+	if n, ok := decodePortNumber(raw); ok {
+		return n, true
+	}
+	return decodePortString(raw)
+}
+
+// decodePortNumber decodes raw as a JSON number, accepting only positive ports.
+func decodePortNumber(raw json.RawMessage) (int, bool) {
 	var n int
 	if err := json.Unmarshal(raw, &n); err == nil && n > 0 {
 		return n, true
 	}
+	return 0, false
+}
+
+// decodePortString decodes raw as a numeric JSON string (Yeoman emits a
+// string), accepting only positive ports.
+func decodePortString(raw json.RawMessage) (int, bool) {
 	var s string
-	if err := json.Unmarshal(raw, &s); err == nil && s != "" {
-		var parsed int
-		if _, err := fmt.Sscanf(s, "%d", &parsed); err == nil && parsed > 0 {
-			return parsed, true
-		}
+	if err := json.Unmarshal(raw, &s); err != nil || s == "" {
+		return 0, false
+	}
+	var parsed int
+	if _, err := fmt.Sscanf(s, "%d", &parsed); err == nil && parsed > 0 {
+		return parsed, true
 	}
 	return 0, false
 }

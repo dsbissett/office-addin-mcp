@@ -18,6 +18,29 @@ const discoverSchema = `{
   "additionalProperties": false
 }`
 
+// discoverOutputSchema describes the success Data shape for word.discover. Every
+// result merges the cache metadata (cached, filePath, fingerprint) over the live
+// or cached discovery snapshot, so those three keys are always present; the
+// host-specific fields (title, author, sections, …) ride alongside and are kept
+// permissive via additionalProperties.
+const discoverOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "word.discover result",
+  "type": "object",
+  "required": ["cached", "filePath", "fingerprint"],
+  "properties": {
+    "cached":      {"type": "boolean", "description": "True when the snapshot was served from the persistent doccache."},
+    "filePath":    {"type": "string", "description": "Stable file identity of the discovered document."},
+    "fingerprint": {"type": "string", "description": "Content fingerprint used for cache invalidation."},
+    "title":       {"type": "string"},
+    "author":      {"type": "string"},
+    "wordCount":   {"type": "number"},
+    "sections":    {"type": "array"},
+    "contentControls": {"type": "array"}
+  },
+  "additionalProperties": true
+}`
+
 type discoverParams struct {
 	Force bool `json:"force,omitempty"`
 	officetool.SelectorFields
@@ -26,11 +49,12 @@ type discoverParams struct {
 // Discover returns the word.discover tool definition.
 func Discover() tools.Tool {
 	return tools.Tool{
-		Name:        "word.discover",
-		Description: "Cached document discovery: title, author, section count, content controls, word count.",
-		Schema:      json.RawMessage(discoverSchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runDiscover,
+		Name:         "word.discover",
+		Description:  "Cached document discovery: title, author, section count, content controls, word count.",
+		Schema:       json.RawMessage(discoverSchema),
+		OutputSchema: json.RawMessage(discoverOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runDiscover,
 	}
 }
 

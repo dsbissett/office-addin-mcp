@@ -49,43 +49,13 @@ func RunPayload(
 ) tools.Result {
 	att, err := env.Attach(ctx, sel)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			res := tools.ClassifyCDPErr("attach_failed", err)
-			res.Summary = hostLabel + " attach failed: " + err.Error()
-			return res
-		}
-		return tools.Result{
-			Err:     &tools.EnvelopeError{Code: "attach_failed", Message: err.Error(), Category: tools.CategoryNotFound},
-			Summary: hostLabel + " attach failed: " + err.Error(),
-		}
+		return attachErrToResult(err, hostLabel)
 	}
 
 	exec := officejs.New(att.Conn, att.SessionID)
 	raw, err := exec.Run(ctx, payload, args)
 	if err != nil {
-		var oerr *officejs.OfficeError
-		if errors.As(err, &oerr) {
-			details := map[string]any{}
-			if len(oerr.DebugInfo) > 0 {
-				var di any
-				if json.Unmarshal(oerr.DebugInfo, &di) == nil {
-					details["debugInfo"] = di
-				}
-			}
-			res := tools.FailWithDetails(tools.CategoryOfficeJS, codeOrDefault(oerr.Code), oerr.Message, false, details)
-			res.Summary = "Office.js error: " + oerr.Message
-			return res
-		}
-		var pe *officejs.ProtocolException
-		if errors.As(err, &pe) {
-			return tools.Result{
-				Err:     &tools.EnvelopeError{Code: "payload_protocol_exception", Message: pe.Text, Category: tools.CategoryProtocol},
-				Summary: "Payload protocol exception: " + pe.Text,
-			}
-		}
-		res := tools.ClassifyCDPErr("payload_failed", err)
-		res.Summary = hostLabel + " payload failed: " + err.Error()
-		return res
+		return payloadErrToResult(err, hostLabel)
 	}
 
 	var data any
@@ -107,4 +77,58 @@ func codeOrDefault(code string) string {
 		return "office_js_error"
 	}
 	return code
+}
+
+// attachErrToResult maps an env.Attach failure to a tools.Result, matching the
+// shape RunPayload requires: deadline/cancellation flow through ClassifyCDPErr
+// (timeout/internal categories), everything else is a not_found attach failure.
+func attachErrToResult(err error, hostLabel string) tools.Result {
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		res := tools.ClassifyCDPErr("attach_failed", err)
+		res.Summary = hostLabel + " attach failed: " + err.Error()
+		return res
+	}
+	return tools.Result{
+		Err:     &tools.EnvelopeError{Code: "attach_failed", Message: err.Error(), Category: tools.CategoryNotFound},
+		Summary: hostLabel + " attach failed: " + err.Error(),
+	}
+}
+
+// payloadErrToResult classifies an officejs.Executor.Run error into a
+// tools.Result. Office.js errors become office_js failures (with forwarded
+// debugInfo), protocol exceptions become payload_protocol_exception/protocol,
+// and anything else flows through ClassifyCDPErr as payload_failed. Shared by
+// RunPayload and RunDiscover so both surface identical envelopes.
+func payloadErrToResult(err error, hostLabel string) tools.Result {
+	var oerr *officejs.OfficeError
+	if errors.As(err, &oerr) {
+		res := tools.FailWithDetails(tools.CategoryOfficeJS, codeOrDefault(oerr.Code), oerr.Message, false, officeErrDetails(oerr))
+		res.Summary = "Office.js error: " + oerr.Message
+		return res
+	}
+	var pe *officejs.ProtocolException
+	if errors.As(err, &pe) {
+		return tools.Result{
+			Err:     &tools.EnvelopeError{Code: "payload_protocol_exception", Message: pe.Text, Category: tools.CategoryProtocol},
+			Summary: "Payload protocol exception: " + pe.Text,
+		}
+	}
+	res := tools.ClassifyCDPErr("payload_failed", err)
+	res.Summary = hostLabel + " payload failed: " + err.Error()
+	return res
+}
+
+// officeErrDetails extracts the optional debugInfo blob from an OfficeError into
+// the Details map FailWithDetails expects. Empty/invalid debug info yields an
+// empty (non-nil) map, preserving the existing "Details present, no debugInfo
+// key" contract.
+func officeErrDetails(oerr *officejs.OfficeError) map[string]any {
+	details := map[string]any{}
+	if len(oerr.DebugInfo) > 0 {
+		var di any
+		if json.Unmarshal(oerr.DebugInfo, &di) == nil {
+			details["debugInfo"] = di
+		}
+	}
+	return details
 }

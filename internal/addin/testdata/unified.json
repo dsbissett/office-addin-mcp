@@ -1,0 +1,38 @@
+{
+  "id": "json-unified-id",
+  "name": { "short": "ShortName", "full": "Full JSON Name" },
+  "displayName": "Explicit Display Name",
+  "extensions": [
+    {
+      "requirements": {
+        "scopes": ["workbook", "document", "presentation", "mailbox", "workbook", "weirdscope"],
+        "capabilities": [
+          { "name": "ExcelApi", "minVersion": "1.7" },
+          { "name": "ExcelApi", "minVersion": "1.7" },
+          { "name": "", "minVersion": "0.0" }
+        ]
+      },
+      "runtimes": [
+        {
+          "id": "taskpane",
+          "type": "general",
+          "code": { "page": "https://example.com/tp.html" },
+          "actions": [{ "id": "x", "type": "openPage" }]
+        },
+        {
+          "id": "cf",
+          "type": "general",
+          "code": { "page": "https://example.com/fn.html", "script": "https://example.com/fn.js" },
+          "actions": [{ "id": "y", "type": "executeFunction" }]
+        },
+        {
+          "id": "empty",
+          "type": "general",
+          "code": {},
+          "actions": []
+        }
+      ]
+    }
+  ],
+  "host": "Workbook"
+}

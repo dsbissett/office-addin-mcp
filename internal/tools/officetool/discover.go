@@ -3,7 +3,6 @@ package officetool
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/dsbissett/office-addin-mcp/internal/doccache"
@@ -36,10 +35,7 @@ func RunDiscover(
 ) tools.Result {
 	att, err := env.Attach(ctx, sel)
 	if err != nil {
-		return tools.Result{
-			Err:     &tools.EnvelopeError{Code: "attach_failed", Message: err.Error(), Category: tools.CategoryNotFound},
-			Summary: hostLabel + " attach failed: " + err.Error(),
-		}
+		return discoverAttachErr(err, hostLabel)
 	}
 	exec := officejs.New(att.Conn, att.SessionID)
 	rawResult, err := exec.Run(ctx, payload, map[string]any{})
@@ -47,27 +43,59 @@ func RunDiscover(
 		return classifyDiscoverErr(err, hostLabel)
 	}
 
-	var head struct {
-		FilePath    string `json:"filePath"`
-		Fingerprint string `json:"fingerprint"`
-	}
+	var head discoverHead
 	if err := json.Unmarshal(rawResult, &head); err != nil {
 		return tools.Fail(tools.CategoryInternal, "decode_discover", err.Error(), false)
 	}
 
 	cache := env.DocCache
-	cached, hit := cache.Get(host, head.FilePath)
-	if !force && hit && cached.Fingerprint == head.Fingerprint {
-		var data any
-		if err := json.Unmarshal(cached.Data, &data); err != nil {
-			return tools.Fail(tools.CategoryInternal, "decode_cached", err.Error(), false)
-		}
-		return tools.OKWithSummary(
-			fmt.Sprintf("%s discovery cache hit (%s).", hostLabel, head.FilePath),
-			withCacheMeta(data, head.FilePath, head.Fingerprint, true),
-		)
+	if cached, hit := cache.Get(host, head.FilePath); cacheFresh(cached.Fingerprint, head.Fingerprint, hit, force) {
+		return discoverCacheHit(cached, head, hostLabel)
 	}
+	return discoverRefresh(cache, host, rawResult, head, hostLabel)
+}
 
+// discoverHead is the minimal top-level shape every host discover payload must
+// return: a stable file identity plus a content fingerprint used for caching.
+type discoverHead struct {
+	FilePath    string `json:"filePath"`
+	Fingerprint string `json:"fingerprint"`
+}
+
+// discoverAttachErr maps an env.Attach failure for RunDiscover. RunDiscover has
+// always surfaced a plain not_found attach_failed (no deadline/cancellation
+// special-casing), so this intentionally does not reuse RunPayload's
+// deadline-aware attachErrToResult.
+func discoverAttachErr(err error, hostLabel string) tools.Result {
+	return tools.Result{
+		Err:     &tools.EnvelopeError{Code: "attach_failed", Message: err.Error(), Category: tools.CategoryNotFound},
+		Summary: hostLabel + " attach failed: " + err.Error(),
+	}
+}
+
+// cacheFresh reports whether the cached snapshot may be returned in place of a
+// live refresh: caching not forced off, an entry exists, and its fingerprint
+// matches the live one.
+func cacheFresh(cachedFingerprint, liveFingerprint string, hit, force bool) bool {
+	return !force && hit && cachedFingerprint == liveFingerprint
+}
+
+// discoverCacheHit returns the on-disk snapshot decorated with cache metadata.
+func discoverCacheHit(cached doccache.Entry, head discoverHead, hostLabel string) tools.Result {
+	var data any
+	if err := json.Unmarshal(cached.Data, &data); err != nil {
+		return tools.Fail(tools.CategoryInternal, "decode_cached", err.Error(), false)
+	}
+	return tools.OKWithSummary(
+		fmt.Sprintf("%s discovery cache hit (%s).", hostLabel, head.FilePath),
+		withCacheMeta(data, head.FilePath, head.Fingerprint, true),
+	)
+}
+
+// discoverRefresh persists the live snapshot and returns it. A cache-write
+// failure is non-fatal: the live data is still returned with a note in the
+// summary, matching the pre-refactor behavior.
+func discoverRefresh(cache *doccache.Store, host string, rawResult json.RawMessage, head discoverHead, hostLabel string) tools.Result {
 	if err := cache.Put(doccache.Entry{
 		Host:        host,
 		FilePath:    head.FilePath,
@@ -106,32 +134,9 @@ func withCacheMeta(data any, filePath, fingerprint string, cached bool) map[stri
 	return out
 }
 
+// classifyDiscoverErr maps a discover-payload error to a tools.Result. The
+// classification is identical to RunPayload's, so it delegates to the shared
+// payloadErrToResult helper to keep the two envelopes byte-for-byte aligned.
 func classifyDiscoverErr(err error, hostLabel string) tools.Result {
-	var oerr *officejs.OfficeError
-	if errors.As(err, &oerr) {
-		details := map[string]any{}
-		if len(oerr.DebugInfo) > 0 {
-			var di any
-			if json.Unmarshal(oerr.DebugInfo, &di) == nil {
-				details["debugInfo"] = di
-			}
-		}
-		code := oerr.Code
-		if code == "" {
-			code = "office_js_error"
-		}
-		res := tools.FailWithDetails(tools.CategoryOfficeJS, code, oerr.Message, false, details)
-		res.Summary = "Office.js error: " + oerr.Message
-		return res
-	}
-	var pe *officejs.ProtocolException
-	if errors.As(err, &pe) {
-		return tools.Result{
-			Err:     &tools.EnvelopeError{Code: "payload_protocol_exception", Message: pe.Text, Category: tools.CategoryProtocol},
-			Summary: "Payload protocol exception: " + pe.Text,
-		}
-	}
-	res := tools.ClassifyCDPErr("payload_failed", err)
-	res.Summary = hostLabel + " payload failed: " + err.Error()
-	return res
+	return payloadErrToResult(err, hostLabel)
 }

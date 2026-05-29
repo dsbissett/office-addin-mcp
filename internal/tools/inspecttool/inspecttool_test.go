@@ -26,6 +26,48 @@ func TestRegister_AllTools(t *testing.T) {
 	}
 }
 
+func TestAnnotations_ReadOnlyTools(t *testing.T) {
+	cases := map[string]tools.Tool{
+		"page.snapshot":    Snapshot(),
+		"page.screenshot":  Screenshot(),
+		"page.waitFor":     WaitFor(),
+		"page.consoleLog":  ConsoleLog(),
+		"page.networkLog":  NetworkLog(),
+		"page.networkBody": NetworkBody(),
+	}
+	for name, tool := range cases {
+		a := tool.Annotations
+		if a == nil {
+			t.Fatalf("%s: missing annotations", name)
+		}
+		if !a.ReadOnlyHint {
+			t.Errorf("%s: ReadOnlyHint = false, want true", name)
+		}
+		if !a.IdempotentHint {
+			t.Errorf("%s: IdempotentHint = false, want true", name)
+		}
+		if a.DestructiveHint == nil || *a.DestructiveHint {
+			t.Errorf("%s: DestructiveHint = %v, want non-nil false", name, a.DestructiveHint)
+		}
+	}
+}
+
+func TestAnnotations_EvaluateIsDestructiveOpenWorld(t *testing.T) {
+	a := Evaluate().Annotations
+	if a == nil {
+		t.Fatal("page.evaluate: missing annotations")
+	}
+	if a.ReadOnlyHint {
+		t.Error("page.evaluate: ReadOnlyHint = true, want false")
+	}
+	if a.DestructiveHint == nil || !*a.DestructiveHint {
+		t.Errorf("page.evaluate: DestructiveHint = %v, want non-nil true", a.DestructiveHint)
+	}
+	if a.OpenWorldHint == nil || !*a.OpenWorldHint {
+		t.Errorf("page.evaluate: OpenWorldHint = %v, want non-nil true", a.OpenWorldHint)
+	}
+}
+
 func TestWalkAXTree_AssignsUIDsAndSkipsIgnored(t *testing.T) {
 	tree := []axNode{
 		{NodeID: "1", Role: prop("WebArea"), Name: prop("Doc"), BackendDOMID: 100, ChildIDs: []string{"2", "3"}},

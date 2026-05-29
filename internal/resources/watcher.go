@@ -114,27 +114,35 @@ func (w *Watcher) poll(ctx context.Context, sub *subscription) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			fp, err := w.provider.Fingerprint(ctx, sub.uri)
-			if err != nil {
-				slog.Warn("fingerprint check failed", "uri", sub.uri, "error", err)
-				continue
-			}
-
-			w.mu.Lock()
-			oldFP := sub.fingerprint
-			w.mu.Unlock()
-
-			if fp != oldFP {
-				slog.Debug("resource changed", "uri", sub.uri)
-				w.mu.Lock()
-				sub.fingerprint = fp
-				w.mu.Unlock()
-
-				// Notify outside the lock.
-				if w.notify != nil {
-					w.notify(context.Background(), sub.uri)
-				}
-			}
+			w.checkOnce(ctx, sub)
 		}
+	}
+}
+
+// checkOnce fetches the current fingerprint for sub and notifies if it changed.
+// Fingerprint errors are logged and swallowed (the next tick retries).
+func (w *Watcher) checkOnce(ctx context.Context, sub *subscription) {
+	fp, err := w.provider.Fingerprint(ctx, sub.uri)
+	if err != nil {
+		slog.Warn("fingerprint check failed", "uri", sub.uri, "error", err)
+		return
+	}
+
+	w.mu.Lock()
+	oldFP := sub.fingerprint
+	w.mu.Unlock()
+
+	if fp == oldFP {
+		return
+	}
+
+	slog.Debug("resource changed", "uri", sub.uri)
+	w.mu.Lock()
+	sub.fingerprint = fp
+	w.mu.Unlock()
+
+	// Notify outside the lock.
+	if w.notify != nil {
+		w.notify(context.Background(), sub.uri)
 	}
 }

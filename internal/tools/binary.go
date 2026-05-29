@@ -33,40 +33,65 @@ func WriteBinaryFieldOutput(rawCDPResult json.RawMessage, fieldName, mimeType, o
 			"outputPath must be a non-empty filesystem path", false)
 	}
 
-	var probe map[string]json.RawMessage
-	if err := json.Unmarshal(rawCDPResult, &probe); err != nil {
-		return Fail(CategoryProtocol, "binary_decode_envelope",
-			fmt.Sprintf("CDP result not a JSON object: %v", err), false)
+	bytes, failure := decodeBinaryField(rawCDPResult, fieldName)
+	if failure != nil {
+		return *failure
 	}
-	encoded, ok := probe[fieldName]
-	if !ok {
-		return Fail(CategoryProtocol, "binary_field_missing",
-			fmt.Sprintf("CDP result has no field %q", fieldName), false)
-	}
-	var b64 string
-	if err := json.Unmarshal(encoded, &b64); err != nil {
-		return Fail(CategoryProtocol, "binary_field_not_string",
-			fmt.Sprintf("CDP %q field is not a JSON string: %v", fieldName, err), false)
-	}
-	bytes, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return Fail(CategoryProtocol, "binary_decode_base64",
-			fmt.Sprintf("CDP %q field is not valid base64: %v", fieldName, err), false)
-	}
-
-	if dir := filepath.Dir(outputPath); dir != "." && dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return Fail(CategoryInternal, "output_mkdir_failed",
-				fmt.Sprintf("create %s: %v", dir, err), false)
-		}
-	}
-	if err := os.WriteFile(outputPath, bytes, 0o644); err != nil {
-		return Fail(CategoryInternal, "output_write_failed",
-			fmt.Sprintf("write %s: %v", outputPath, err), false)
+	if failure := writeBinaryFile(outputPath, bytes); failure != nil {
+		return *failure
 	}
 	return OK(BinaryOutput{
 		Path:      outputPath,
 		SizeBytes: int64(len(bytes)),
 		MimeType:  mimeType,
 	})
+}
+
+// decodeBinaryField pulls fieldName out of the raw CDP object and base64-decodes
+// it. On success it returns the bytes and a nil failure; on any error it returns
+// nil bytes and a populated failure Result.
+func decodeBinaryField(rawCDPResult json.RawMessage, fieldName string) ([]byte, *Result) {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(rawCDPResult, &probe); err != nil {
+		return nil, failPtr(CategoryProtocol, "binary_decode_envelope",
+			fmt.Sprintf("CDP result not a JSON object: %v", err))
+	}
+	encoded, ok := probe[fieldName]
+	if !ok {
+		return nil, failPtr(CategoryProtocol, "binary_field_missing",
+			fmt.Sprintf("CDP result has no field %q", fieldName))
+	}
+	var b64 string
+	if err := json.Unmarshal(encoded, &b64); err != nil {
+		return nil, failPtr(CategoryProtocol, "binary_field_not_string",
+			fmt.Sprintf("CDP %q field is not a JSON string: %v", fieldName, err))
+	}
+	bytes, err := base64.StdEncoding.DecodeString(b64)
+	if err != nil {
+		return nil, failPtr(CategoryProtocol, "binary_decode_base64",
+			fmt.Sprintf("CDP %q field is not valid base64: %v", fieldName, err))
+	}
+	return bytes, nil
+}
+
+// writeBinaryFile creates the parent directory if needed and writes bytes to
+// outputPath. Returns a populated failure Result on error, nil on success.
+func writeBinaryFile(outputPath string, bytes []byte) *Result {
+	if dir := filepath.Dir(outputPath); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return failPtr(CategoryInternal, "output_mkdir_failed",
+				fmt.Sprintf("create %s: %v", dir, err))
+		}
+	}
+	if err := os.WriteFile(outputPath, bytes, 0o644); err != nil {
+		return failPtr(CategoryInternal, "output_write_failed",
+			fmt.Sprintf("write %s: %v", outputPath, err))
+	}
+	return nil
+}
+
+// failPtr builds a non-retryable failure Result and returns its address.
+func failPtr(category, code, msg string) *Result {
+	r := Fail(category, code, msg, false)
+	return &r
 }

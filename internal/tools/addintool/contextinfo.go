@@ -73,15 +73,7 @@ func runContextInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
 	}
 
-	sets := p.RequirementSets
-	if len(sets) == 0 {
-		sets = addin.StandardRequirementSets
-		if env.Manifest != nil {
-			if m := env.Manifest(); m != nil {
-				sets = addin.MergeRequirementSets(sets, m.Requirements)
-			}
-		}
-	}
+	sets := resolveRequirementSets(p.RequirementSets, env)
 
 	exec := officejs.New(att.Conn, att.SessionID)
 	out, err := exec.Run(ctx, "addin.contextInfo", map[string]any{"requirementSets": sets})
@@ -93,11 +85,31 @@ func runContextInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		return tools.Fail(tools.CategoryInternal, "decode_payload_result", err.Error(), false)
 	}
 	host, _ := contextInfoHost(data)
-	summary := "Returned Office context info."
-	if host != "" {
-		summary = "Returned Office context (host=" + host + ")."
+	return tools.OKWithSummary(contextInfoSummary(host), data)
+}
+
+// resolveRequirementSets returns the caller-supplied sets unchanged, or the
+// standard sets merged with any manifest-declared requirements when none were
+// supplied.
+func resolveRequirementSets(supplied []addin.RequirementSet, env *tools.RunEnv) []addin.RequirementSet {
+	if len(supplied) > 0 {
+		return supplied
 	}
-	return tools.OKWithSummary(summary, data)
+	sets := addin.StandardRequirementSets
+	if env.Manifest == nil {
+		return sets
+	}
+	if m := env.Manifest(); m != nil {
+		sets = addin.MergeRequirementSets(sets, m.Requirements)
+	}
+	return sets
+}
+
+func contextInfoSummary(host string) string {
+	if host != "" {
+		return "Returned Office context (host=" + host + ")."
+	}
+	return "Returned Office context info."
 }
 
 func contextInfoHost(data any) (string, bool) {

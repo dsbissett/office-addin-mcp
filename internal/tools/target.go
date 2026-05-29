@@ -39,35 +39,59 @@ func ResolveTarget(ctx context.Context, conn *cdp.Connection, sel TargetSelector
 	if err != nil {
 		return cdp.TargetInfo{}, err
 	}
-	if sel.TargetID != "" {
-		for _, t := range targets {
-			if t.TargetID == sel.TargetID {
-				return t, nil
-			}
-		}
-		return cdp.TargetInfo{}, fmt.Errorf("no target with targetId %q", sel.TargetID)
+	switch {
+	case sel.TargetID != "":
+		return targetByID(targets, sel.TargetID)
+	case sel.URLPattern != "":
+		return targetByURLPattern(targets, sel.URLPattern)
+	case sel.Surface != "":
+		return targetBySurface(targets, sel, manifest)
 	}
-	if sel.URLPattern != "" {
-		for _, t := range targets {
-			if strings.Contains(t.URL, sel.URLPattern) {
-				return t, nil
-			}
+	return defaultTarget(ctx, conn, targets)
+}
+
+func targetByID(targets []cdp.TargetInfo, targetID string) (cdp.TargetInfo, error) {
+	for _, t := range targets {
+		if t.TargetID == targetID {
+			return t, nil
 		}
-		return cdp.TargetInfo{}, fmt.Errorf("no target with url containing %q", sel.URLPattern)
 	}
-	if sel.Surface != "" {
-		classified := addin.ClassifyTargets(targets, manifest)
-		for _, ct := range classified {
-			if ct.Surface != sel.Surface {
-				continue
-			}
-			if sel.AddinID != "" && manifest != nil && !strings.EqualFold(manifest.ID, sel.AddinID) {
-				continue
-			}
+	return cdp.TargetInfo{}, fmt.Errorf("no target with targetId %q", targetID)
+}
+
+func targetByURLPattern(targets []cdp.TargetInfo, pattern string) (cdp.TargetInfo, error) {
+	for _, t := range targets {
+		if strings.Contains(t.URL, pattern) {
+			return t, nil
+		}
+	}
+	return cdp.TargetInfo{}, fmt.Errorf("no target with url containing %q", pattern)
+}
+
+func targetBySurface(targets []cdp.TargetInfo, sel TargetSelector, manifest *addin.Manifest) (cdp.TargetInfo, error) {
+	for _, ct := range addin.ClassifyTargets(targets, manifest) {
+		if surfaceMatches(ct, sel, manifest) {
 			return ct.TargetInfo, nil
 		}
-		return cdp.TargetInfo{}, fmt.Errorf("no target classified as surface %q", sel.Surface)
 	}
+	return cdp.TargetInfo{}, fmt.Errorf("no target classified as surface %q", sel.Surface)
+}
+
+// surfaceMatches reports whether a classified target satisfies the surface
+// selector, honoring the optional add-in id restriction.
+func surfaceMatches(ct addin.ClassifiedTarget, sel TargetSelector, manifest *addin.Manifest) bool {
+	if ct.Surface != sel.Surface {
+		return false
+	}
+	if sel.AddinID != "" && manifest != nil && !strings.EqualFold(manifest.ID, sel.AddinID) {
+		return false
+	}
+	return true
+}
+
+// defaultTarget returns the first page target, creating an "about:blank" page
+// when none exists.
+func defaultTarget(ctx context.Context, conn *cdp.Connection, targets []cdp.TargetInfo) (cdp.TargetInfo, error) {
 	if t, ok := cdp.FirstPageTarget(targets); ok {
 		return t, nil
 	}

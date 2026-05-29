@@ -54,19 +54,10 @@ func New(eval Evaluator, sessionID string) *Executor {
 // payload-failure returns *OfficeError; on transport/JS-parse failure returns
 // *ProtocolException or the underlying transport error.
 func (e *Executor) Run(ctx context.Context, toolName string, args any) (json.RawMessage, error) {
-	body, err := getPayload(toolName)
+	expr, err := buildExpr(toolName, args)
 	if err != nil {
 		return nil, err
 	}
-	pre, err := preamble()
-	if err != nil {
-		return nil, err
-	}
-	argsJSON, err := encodeArgs(args)
-	if err != nil {
-		return nil, err
-	}
-	expr := buildExpression(pre, body, argsJSON)
 
 	res, err := e.eval.Evaluate(ctx, e.sessionID, cdp.EvaluateParams{
 		Expression:    expr,
@@ -77,6 +68,36 @@ func (e *Executor) Run(ctx context.Context, toolName string, args any) (json.Raw
 	if err != nil {
 		return nil, err
 	}
+
+	value, err := extractValue(res)
+	if err != nil {
+		return nil, err
+	}
+	return decodeEnvelope(value)
+}
+
+// buildExpr resolves the payload + preamble for a tool, encodes its args, and
+// wraps them into the async IIFE expression evaluated in the page.
+func buildExpr(toolName string, args any) (string, error) {
+	body, err := getPayload(toolName)
+	if err != nil {
+		return "", err
+	}
+	pre, err := preamble()
+	if err != nil {
+		return "", err
+	}
+	argsJSON, err := encodeArgs(args)
+	if err != nil {
+		return "", err
+	}
+	return buildExpression(pre, body, argsJSON), nil
+}
+
+// extractValue maps a Runtime.evaluate result to the raw payload value bytes.
+// It surfaces page-level exceptions as *ProtocolException and rejects an empty
+// return value before envelope decoding.
+func extractValue(res *cdp.EvaluateResult) (json.RawMessage, error) {
 	if res.ExceptionDetails != nil {
 		return nil, &ProtocolException{Text: res.ExceptionDetails.String()}
 	}
@@ -87,7 +108,12 @@ func (e *Executor) Run(ctx context.Context, toolName string, args any) (json.Raw
 		}
 		return nil, fmt.Errorf("officejs: payload returned empty value (type=%q)", t)
 	}
+	return res.Result.Value, nil
+}
 
+// decodeEnvelope unwraps the payload envelope: on payload-success it returns
+// the inner `result` JSON; on payload-failure it returns *OfficeError.
+func decodeEnvelope(value json.RawMessage) (json.RawMessage, error) {
 	var envelope struct {
 		Result      json.RawMessage `json:"result,omitempty"`
 		OfficeError bool            `json:"__officeError,omitempty"`
@@ -95,7 +121,7 @@ func (e *Executor) Run(ctx context.Context, toolName string, args any) (json.Raw
 		Message     string          `json:"message,omitempty"`
 		DebugInfo   json.RawMessage `json:"debugInfo,omitempty"`
 	}
-	if err := json.Unmarshal(res.Result.Value, &envelope); err != nil {
+	if err := json.Unmarshal(value, &envelope); err != nil {
 		return nil, fmt.Errorf("officejs: decode payload envelope: %w", err)
 	}
 	if envelope.OfficeError {

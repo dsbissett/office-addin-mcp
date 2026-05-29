@@ -49,34 +49,7 @@ func load() {
 	payloadByName = map[string]string{}
 	payloadRequires = map[string][]Requirement{}
 
-	err := fs.WalkDir(js.FS, ".", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		if !strings.HasSuffix(path, ".js") {
-			return nil
-		}
-		raw, err := js.FS.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read %s: %w", path, err)
-		}
-		src := string(raw)
-		if path == preambleFile {
-			preambleSrc = src
-			return nil
-		}
-		toolName, err := fileToToolName(path)
-		if err != nil {
-			return err
-		}
-		payloadByName[toolName] = src
-		payloadRequires[toolName] = parseRequires(src)
-		return nil
-	})
-	if err != nil {
+	if err := fs.WalkDir(js.FS, ".", loadFile); err != nil {
 		loadErr = fmt.Errorf("officejs: load: %w", err)
 		return
 	}
@@ -84,6 +57,45 @@ func load() {
 		loadErr = fmt.Errorf("officejs: %s missing from embed FS", preambleFile)
 		return
 	}
+}
+
+// loadFile is the WalkDir callback: it skips non-.js entries and routes the
+// rest to ingestFile.
+func loadFile(path string, d fs.DirEntry, err error) error {
+	if err != nil {
+		return err
+	}
+	if d.IsDir() || !strings.HasSuffix(path, ".js") {
+		return nil
+	}
+	return ingestFile(path)
+}
+
+// ingestFile reads a .js source and routes it to the preamble or the payload
+// registry.
+func ingestFile(path string) error {
+	raw, err := js.FS.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	src := string(raw)
+	if path == preambleFile {
+		preambleSrc = src
+		return nil
+	}
+	return registerPayload(path, src)
+}
+
+// registerPayload records a payload's source and parsed @requires under the
+// tool name derived from its embed path.
+func registerPayload(path, src string) error {
+	toolName, err := fileToToolName(path)
+	if err != nil {
+		return err
+	}
+	payloadByName[toolName] = src
+	payloadRequires[toolName] = parseRequires(src)
+	return nil
 }
 
 // getPayload returns the JS body for a tool name (e.g. "excel.readRange").

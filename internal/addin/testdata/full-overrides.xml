@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1"
+           xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+           xsi:type="TaskPaneApp">
+  <Id>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</Id>
+  <Version>1.0.0.0</Version>
+  <ProviderName>FullTest</ProviderName>
+  <DefaultLocale>en-US</DefaultLocale>
+  <DisplayName DefaultValue="Full Overrides Addin"/>
+  <Description DefaultValue="desc"/>
+  <Hosts>
+    <Host Name="Document"/>
+    <Host Name="Workbook"/>
+  </Hosts>
+  <Requirements>
+    <Sets DefaultMinVersion="1.1">
+      <Set Name="ExcelApi" MinVersion="1.7"/>
+      <Set Name="" MinVersion="9.9"/>
+    </Sets>
+  </Requirements>
+  <DefaultSettings>
+    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html"/>
+  </DefaultSettings>
+  <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
+    <Requirements>
+      <Sets DefaultMinVersion="1.1">
+        <Set Name="SharedRuntime" MinVersion="1.1"/>
+        <Set Name="ExcelApi" MinVersion="1.7"/>
+        <Set Name="" MinVersion="0.0"/>
+      </Sets>
+    </Requirements>
+    <Hosts>
+      <Host xsi:type="Workbook">
+        <DesktopFormFactor>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <SourceLocation resid="fn-file"/>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="PrimaryCommandSurface">
+            <Page><SourceLocation resid="cmd-page"/></Page>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="ContentArea">
+            <SourceLocation resid="content-area"/>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="CustomFunctions">
+            <Script><SourceLocation resid="cf-script"/></Script>
+            <Page><SourceLocation resid="cf-page"/></Page>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="TaskPaneApp">
+            <SourceLocation resid="tp-direct"/>
+          </ExtensionPoint>
+          <ExtensionPoint xsi:type="UnknownThing">
+            <SourceLocation resid="missing-resid"/>
+          </ExtensionPoint>
+        </DesktopFormFactor>
+        <Runtimes>
+          <Runtime resid="rt-long" lifetime="long"/>
+          <Runtime resid="rt-short" lifetime="short"/>
+          <Runtime resid="rt-missing"/>
+        </Runtimes>
+      </Host>
+    </Hosts>
+    <Resources>
+      <Urls>
+        <Url id="fn-file" DefaultValue="https://localhost:3000/commands.html"/>
+        <Url id="cmd-page" DefaultValue="https://localhost:3000/cmdpage.html"/>
+        <Url id="content-area" DefaultValue="https://localhost:3000/content.html"/>
+        <Url id="cf-script" DefaultValue="https://localhost:3000/functions.js"/>
+        <Url id="cf-page" DefaultValue="https://localhost:3000/functions.html"/>
+        <Url id="tp-direct" DefaultValue="https://localhost:3000/tp2.html"/>
+        <Url id="rt-long" DefaultValue="https://localhost:3000/shared.html"/>
+        <Url id="rt-short" DefaultValue="https://localhost:3000/short.html"/>
+        <Url id="empty-url" DefaultValue=""/>
+      </Urls>
+    </Resources>
+  </VersionOverrides>
+</OfficeApp>

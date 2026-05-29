@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/dsbissett/office-addin-mcp/internal/cdp"
 	"github.com/dsbissett/office-addin-mcp/internal/tools"
 )
 
@@ -36,6 +37,9 @@ func Select() tools.Tool {
 		Description: "Pick a sticky default page for subsequent UID-based interaction tools. Resolves and attaches the target so the next call skips Target.getTargets / attachToTarget.",
 		Schema:      json.RawMessage(selectSchema),
 		Run:         runSelect,
+		// Additive: sets the sticky default selection without touching the
+		// document. Re-selecting the same target yields the same state.
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 	}
 }
 
@@ -44,8 +48,8 @@ func runSelect(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	if p.TargetID == "" && p.URLPattern == "" && p.Surface == "" {
-		return tools.Fail(tools.CategoryValidation, "missing_selector", "provide one of: targetId, urlPattern, surface", false)
+	if res, ok := requireSelector(p.TargetID, p.URLPattern, p.Surface); !ok {
+		return res
 	}
 	att, err := env.Attach(ctx, makeSelector(p.TargetID, p.URLPattern, p.Surface))
 	if err != nil {
@@ -54,12 +58,22 @@ func runSelect(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 	if env.SetDefaultSelection != nil {
 		env.SetDefaultSelection(att.Target, att.SessionID)
 	}
-	label := att.Target.Title
-	if label == "" {
-		label = att.Target.URL
+	return selectResult(att)
+}
+
+// selectLabel prefers the target title, falling back to its URL when the title
+// is empty.
+func selectLabel(t cdp.TargetInfo) string {
+	if t.Title == "" {
+		return t.URL
 	}
+	return t.Title
+}
+
+// selectResult shapes the OK envelope for a resolved pages.select.
+func selectResult(att *tools.AttachedTarget) tools.Result {
 	return tools.OKWithSummary(
-		"Selected page "+label+".",
+		"Selected page "+selectLabel(att.Target)+".",
 		struct {
 			TargetID     string `json:"targetId"`
 			URL          string `json:"url"`

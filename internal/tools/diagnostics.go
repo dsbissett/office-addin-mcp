@@ -28,12 +28,15 @@ func classifyOfficeJSErr(ctx context.Context, env *RunEnv, toolName string, para
 	if errEnv.Details == nil {
 		errEnv.Details = map[string]any{}
 	}
-	host := hostFromTool(toolName)
 	addr := extractParamString(params, "address")
 	if addr != "" {
 		errEnv.Details["failing_address"] = addr
 	}
+	enrichByHost(ctx, env, hostFromTool(toolName), errEnv, params, addr)
+}
 
+// enrichByHost routes an Office.js error to the host-specific enricher.
+func enrichByHost(ctx context.Context, env *RunEnv, host string, errEnv *EnvelopeError, params json.RawMessage, addr string) {
 	switch host {
 	case "excel":
 		enrichExcel(ctx, env, errEnv, params, addr)
@@ -52,20 +55,33 @@ func enrichExcel(ctx context.Context, env *RunEnv, errEnv *EnvelopeError, params
 	}
 
 	if errEnv.Code == "InvalidArgument" && addr != "" {
-		if info := analyzeAddress(addr); len(info) > 0 {
-			for k, v := range info {
-				errEnv.Details[k] = v
-			}
-			if errEnv.RecoveryHint == "" {
-				errEnv.RecoveryHint = "Range address rejected as invalid. Inspect parsed bounds in details and retry with a valid address."
-			}
-		}
+		enrichExcelInvalidAddress(errEnv, addr)
 	}
 
 	if errEnv.Code != "ItemNotFound" {
 		return
 	}
+	enrichExcelItemNotFound(ctx, env, errEnv, params, addr)
+}
 
+// enrichExcelInvalidAddress folds parsed-address bounds into the error details
+// and sets the invalid-address recovery hint when one is not already present.
+func enrichExcelInvalidAddress(errEnv *EnvelopeError, addr string) {
+	info := analyzeAddress(addr)
+	if len(info) == 0 {
+		return
+	}
+	for k, v := range info {
+		errEnv.Details[k] = v
+	}
+	if errEnv.RecoveryHint == "" {
+		errEnv.RecoveryHint = "Range address rejected as invalid. Inspect parsed bounds in details and retry with a valid address."
+	}
+}
+
+// enrichExcelItemNotFound looks up the available sheets and nearest-name
+// suggestions for an ItemNotFound failure, setting the matching recovery hint.
+func enrichExcelItemNotFound(ctx context.Context, env *RunEnv, errEnv *EnvelopeError, params json.RawMessage, addr string) {
 	sheets, source := lookupExcelSheets(ctx, env, params)
 	if len(sheets) == 0 {
 		if errEnv.RecoveryHint == "" {
@@ -75,18 +91,24 @@ func enrichExcel(ctx context.Context, env *RunEnv, errEnv *EnvelopeError, params
 	}
 	errEnv.Details["available_sheets"] = sheets
 	errEnv.Details["available_sheets_source"] = source
+	addNearestSheetSuggestions(errEnv, addr, sheets)
+	if errEnv.RecoveryHint == "" {
+		errEnv.RecoveryHint = "Sheet or range not found. Compare your address against available_sheets and nearest_name_suggestions; retry with a corrected address."
+	}
+}
 
+// addNearestSheetSuggestions records up to three closest sheet names to the
+// failing address (preferring its sheet prefix) when any are within range.
+func addNearestSheetSuggestions(errEnv *EnvelopeError, addr string, sheets []string) {
 	target := sheetFromAddress(addr)
 	if target == "" {
 		target = addr
 	}
-	if target != "" {
-		if matches := nearestNames(target, sheets, 3); len(matches) > 0 {
-			errEnv.Details["nearest_name_suggestions"] = matches
-		}
+	if target == "" {
+		return
 	}
-	if errEnv.RecoveryHint == "" {
-		errEnv.RecoveryHint = "Sheet or range not found. Compare your address against available_sheets and nearest_name_suggestions; retry with a corrected address."
+	if matches := nearestNames(target, sheets, 3); len(matches) > 0 {
+		errEnv.Details["nearest_name_suggestions"] = matches
 	}
 }
 
@@ -107,15 +129,7 @@ func enrichPowerPoint(ctx context.Context, env *RunEnv, errEnv *EnvelopeError, p
 }
 
 func enrichOutlook(ctx context.Context, env *RunEnv, errEnv *EnvelopeError, params json.RawMessage) {
-	msg := strings.ToLower(errEnv.Message)
-	codeUpper := strings.ToUpper(errEnv.Code)
-	hits := strings.Contains(msg, "compose") ||
-		strings.Contains(msg, "read mode") ||
-		strings.Contains(msg, "item mode") ||
-		strings.Contains(msg, "currently selected") ||
-		codeUpper == "INVALIDOPERATION" ||
-		codeUpper == "ITEMNOTFOUND"
-	if !hits {
+	if !outlookModeMismatch(errEnv) {
 		return
 	}
 	mode, ok := lookupOutlookItemMode(ctx, env, params)
@@ -128,39 +142,59 @@ func enrichOutlook(ctx context.Context, env *RunEnv, errEnv *EnvelopeError, para
 	}
 }
 
+// outlookModeMismatch reports whether an Outlook error looks like a
+// compose-vs-read item-mode mismatch worth enriching with the live item mode.
+func outlookModeMismatch(errEnv *EnvelopeError) bool {
+	return outlookMessageHints(errEnv.Message) || outlookCodeHints(errEnv.Code)
+}
+
+func outlookMessageHints(message string) bool {
+	msg := strings.ToLower(message)
+	for _, sub := range []string{"compose", "read mode", "item mode", "currently selected"} {
+		if strings.Contains(msg, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func outlookCodeHints(code string) bool {
+	switch strings.ToUpper(code) {
+	case "INVALIDOPERATION", "ITEMNOTFOUND":
+		return true
+	}
+	return false
+}
+
 // lookupExcelSheets returns the available sheet names. Doccache wins when an
 // entry is present; otherwise a one-shot excel.listWorksheets call against the
 // already-attached target. Returns the sheets and a label naming the source.
 func lookupExcelSheets(ctx context.Context, env *RunEnv, params json.RawMessage) ([]string, string) {
-	if env != nil && env.DocCache != nil {
-		for _, e := range env.DocCache.List("excel") {
-			if names := sheetsFromCacheData(e.Data); len(names) > 0 {
-				return names, "doccache"
-			}
-		}
+	if names := cachedExcelSheets(env); len(names) > 0 {
+		return names, "doccache"
 	}
 	raw, err := runDiagnosticsPayload(ctx, env, params, "excel.listWorksheets", nil)
 	if err != nil {
 		return nil, ""
 	}
-	var out struct {
-		Worksheets []struct {
-			Name string `json:"name"`
-		} `json:"worksheets"`
+	if names := sheetsFromCacheData(raw); len(names) > 0 {
+		return names, "live"
 	}
-	if err := json.Unmarshal(raw, &out); err != nil {
-		return nil, ""
+	return nil, ""
+}
+
+// cachedExcelSheets returns sheet names from the first doccache entry that
+// carries any, or nil when the cache is unavailable or empty.
+func cachedExcelSheets(env *RunEnv) []string {
+	if env == nil || env.DocCache == nil {
+		return nil
 	}
-	names := make([]string, 0, len(out.Worksheets))
-	for _, w := range out.Worksheets {
-		if w.Name != "" {
-			names = append(names, w.Name)
+	for _, e := range env.DocCache.List("excel") {
+		if names := sheetsFromCacheData(e.Data); len(names) > 0 {
+			return names
 		}
 	}
-	if len(names) == 0 {
-		return nil, ""
-	}
-	return names, "live"
+	return nil
 }
 
 func sheetsFromCacheData(data json.RawMessage) []string {
@@ -185,27 +219,28 @@ func sheetsFromCacheData(data json.RawMessage) []string {
 }
 
 func lookupPowerPointSlideCount(ctx context.Context, env *RunEnv, params json.RawMessage) (int, bool) {
-	if env != nil && env.DocCache != nil {
-		for _, e := range env.DocCache.List("powerpoint") {
-			if n, ok := slideCountFromCacheData(e.Data); ok {
-				return n, true
-			}
-		}
+	if n, ok := cachedSlideCount(env); ok {
+		return n, true
 	}
 	raw, err := runDiagnosticsPayload(ctx, env, params, "powerpoint.discover", nil)
 	if err != nil {
 		return 0, false
 	}
-	var out struct {
-		SlideCount int `json:"slideCount"`
-	}
-	if err := json.Unmarshal(raw, &out); err != nil {
+	return slideCountFromCacheData(raw)
+}
+
+// cachedSlideCount returns the slide count from the first doccache entry that
+// carries one, or (0,false) when the cache is unavailable or empty.
+func cachedSlideCount(env *RunEnv) (int, bool) {
+	if env == nil || env.DocCache == nil {
 		return 0, false
 	}
-	if out.SlideCount <= 0 {
-		return 0, false
+	for _, e := range env.DocCache.List("powerpoint") {
+		if n, ok := slideCountFromCacheData(e.Data); ok {
+			return n, true
+		}
 	}
-	return out.SlideCount, true
+	return 0, false
 }
 
 func slideCountFromCacheData(data json.RawMessage) (int, bool) {
@@ -225,19 +260,28 @@ func slideCountFromCacheData(data json.RawMessage) (int, bool) {
 }
 
 func lookupOutlookItemMode(ctx context.Context, env *RunEnv, params json.RawMessage) (string, bool) {
-	if env != nil && env.DocCache != nil {
-		for _, e := range env.DocCache.List("outlook") {
-			if mode, ok := itemModeFromCacheData(e.Data); ok {
-				return mode, true
-			}
-		}
+	if mode, ok := cachedItemMode(env); ok {
+		return mode, true
 	}
 	raw, err := runDiagnosticsPayload(ctx, env, params, "outlook.discover", nil)
 	if err != nil {
 		return "", false
 	}
-	mode, ok := itemModeFromCacheData(raw)
-	return mode, ok
+	return itemModeFromCacheData(raw)
+}
+
+// cachedItemMode returns the host item mode from the first doccache entry that
+// carries one, or ("",false) when the cache is unavailable or empty.
+func cachedItemMode(env *RunEnv) (string, bool) {
+	if env == nil || env.DocCache == nil {
+		return "", false
+	}
+	for _, e := range env.DocCache.List("outlook") {
+		if mode, ok := itemModeFromCacheData(e.Data); ok {
+			return mode, true
+		}
+	}
+	return "", false
 }
 
 func itemModeFromCacheData(data json.RawMessage) (string, bool) {
@@ -312,11 +356,20 @@ func sheetFromAddress(addr string) string {
 	if bang <= 0 {
 		return ""
 	}
-	name := addr[:bang]
-	if len(name) >= 2 && name[0] == '\'' && name[len(name)-1] == '\'' {
-		name = strings.ReplaceAll(name[1:len(name)-1], "''", "'")
+	return unquoteSheetName(addr[:bang])
+}
+
+// unquoteSheetName strips the surrounding single quotes from a sheet name and
+// collapses doubled quotes, returning the input unchanged when not quoted.
+func unquoteSheetName(name string) string {
+	if !isQuoted(name) {
+		return name
 	}
-	return name
+	return strings.ReplaceAll(name[1:len(name)-1], "''", "'")
+}
+
+func isQuoted(s string) bool {
+	return len(s) >= 2 && s[0] == '\'' && s[len(s)-1] == '\''
 }
 
 var rangeRE = regexp.MustCompile(`^([A-Za-z]+)([0-9]+)(?::([A-Za-z]+)([0-9]+))?$`)
@@ -345,28 +398,28 @@ func analyzeAddress(addr string) map[string]any {
 		"start_column": strings.ToUpper(m[1]),
 		"start_row":    mustAtoi(m[2]),
 	}
-	if startCol := columnIndex(m[1]); startCol > excelMaxColumn {
-		out["column_out_of_bounds"] = strings.ToUpper(m[1])
-		out["max_column"] = "XFD"
-	}
-	if r := mustAtoi(m[2]); r > excelMaxRow {
-		out["row_out_of_bounds"] = r
-		out["max_row"] = excelMaxRow
-	}
+	checkAddressBounds(out, m[1], m[2])
 	if m[3] != "" {
 		parsed["end_column"] = strings.ToUpper(m[3])
 		parsed["end_row"] = mustAtoi(m[4])
-		if endCol := columnIndex(m[3]); endCol > excelMaxColumn {
-			out["column_out_of_bounds"] = strings.ToUpper(m[3])
-			out["max_column"] = "XFD"
-		}
-		if r := mustAtoi(m[4]); r > excelMaxRow {
-			out["row_out_of_bounds"] = r
-			out["max_row"] = excelMaxRow
-		}
+		checkAddressBounds(out, m[3], m[4])
 	}
 	out["parsed_address"] = parsed
 	return out
+}
+
+// checkAddressBounds records out-of-bounds column/row markers into out for a
+// single column-letters / row-digits pair. Later pairs overwrite earlier
+// markers, matching the original start-then-end evaluation order.
+func checkAddressBounds(out map[string]any, colLetters, rowDigits string) {
+	if columnIndex(colLetters) > excelMaxColumn {
+		out["column_out_of_bounds"] = strings.ToUpper(colLetters)
+		out["max_column"] = "XFD"
+	}
+	if r := mustAtoi(rowDigits); r > excelMaxRow {
+		out["row_out_of_bounds"] = r
+		out["max_row"] = excelMaxRow
+	}
 }
 
 func columnIndex(letters string) int {
@@ -393,31 +446,44 @@ func nearestNames(query string, names []string, limit int) []string {
 	if query == "" || len(names) == 0 || limit <= 0 {
 		return nil
 	}
-	type scored struct {
-		name string
-		dist int
-		idx  int
-	}
-	q := strings.ToLower(query)
-	cap := len(query) / 2
-	if cap < 2 {
-		cap = 2
-	}
-	scoredOut := make([]scored, 0, len(names))
-	for i, n := range names {
-		d := levenshtein(q, strings.ToLower(n))
-		if d > cap {
-			continue
-		}
-		scoredOut = append(scoredOut, scored{name: n, dist: d, idx: i})
-	}
+	scoredOut := scoreNames(query, names)
 	sort.SliceStable(scoredOut, func(i, j int) bool { return scoredOut[i].dist < scoredOut[j].dist })
-	if limit > len(scoredOut) {
-		limit = len(scoredOut)
+	return topNames(scoredOut, limit)
+}
+
+// topNames returns the names of the first limit entries (or fewer) in order.
+func topNames(scored []scoredName, limit int) []string {
+	if limit > len(scored) {
+		limit = len(scored)
 	}
 	out := make([]string, 0, limit)
 	for i := 0; i < limit; i++ {
-		out = append(out, scoredOut[i].name)
+		out = append(out, scored[i].name)
+	}
+	return out
+}
+
+type scoredName struct {
+	name string
+	dist int
+	idx  int
+}
+
+// scoreNames computes the edit distance of each name to query, dropping any
+// whose distance exceeds half the query length (min 2) as an obvious mismatch.
+func scoreNames(query string, names []string) []scoredName {
+	q := strings.ToLower(query)
+	maxDist := len(query) / 2
+	if maxDist < 2 {
+		maxDist = 2
+	}
+	out := make([]scoredName, 0, len(names))
+	for i, n := range names {
+		d := levenshtein(q, strings.ToLower(n))
+		if d > maxDist {
+			continue
+		}
+		out = append(out, scoredName{name: n, dist: d, idx: i})
 	}
 	return out
 }
@@ -437,23 +503,32 @@ func levenshtein(a, b string) int {
 	}
 	for i := 1; i <= len(ar); i++ {
 		curr[0] = i
-		for j := 1; j <= len(br); j++ {
-			cost := 1
-			if ar[i-1] == br[j-1] {
-				cost = 0
-			}
-			del := prev[j] + 1
-			ins := curr[j-1] + 1
-			sub := prev[j-1] + cost
-			curr[j] = del
-			if ins < curr[j] {
-				curr[j] = ins
-			}
-			if sub < curr[j] {
-				curr[j] = sub
-			}
-		}
+		levenshteinRow(prev, curr, ar[i-1], br)
 		prev, curr = curr, prev
 	}
 	return prev[len(br)]
+}
+
+// levenshteinRow fills curr[1..len(br)] for one source rune ac, given the
+// previous DP row in prev.
+func levenshteinRow(prev, curr []int, ac rune, br []rune) {
+	for j := 1; j <= len(br); j++ {
+		cost := 1
+		if ac == br[j-1] {
+			cost = 0
+		}
+		curr[j] = min3(prev[j]+1, curr[j-1]+1, prev[j-1]+cost)
+	}
+}
+
+// min3 returns the smallest of three ints.
+func min3(a, b, c int) int {
+	m := a
+	if b < m {
+		m = b
+	}
+	if c < m {
+		m = c
+	}
+	return m
 }

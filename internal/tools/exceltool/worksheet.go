@@ -22,6 +22,7 @@ func ListWorksheets() tools.Tool {
 		Name:        "excel.listWorksheets",
 		Description: "List all worksheets in the active workbook with name, id, position, and visibility.",
 		Schema:      json.RawMessage(listWorksheetsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListWorksheets,
 	}
 }
@@ -44,6 +45,7 @@ func GetActiveWorksheet() tools.Tool {
 		Name:        "excel.getActiveWorksheet",
 		Description: "Return the active worksheet's name, id, position, and visibility.",
 		Schema:      json.RawMessage(getActiveWorksheetSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runGetActiveWorksheet,
 	}
 }
@@ -82,6 +84,7 @@ func WorksheetInfo() tools.Tool {
 		Name:        "excel.worksheetInfo",
 		Description: "Metadata for a single worksheet: used range address, visibility, protection, gridlines, tab color, and dimensions.",
 		Schema:      json.RawMessage(worksheetInfoSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runWorksheetInfo,
 	}
 }
@@ -96,17 +99,20 @@ func runWorksheetInfo(ctx context.Context, raw json.RawMessage, env *tools.RunEn
 		args["sheet"] = p.Sheet
 	}
 	return runPayloadSum(ctx, env, p.selector(), "excel.worksheetInfo", args, func(data any) string {
-		name := stringField(data, "name")
-		used := stringField(data, "usedRangeAddress")
-		switch {
-		case name != "" && used != "":
-			return fmt.Sprintf("Worksheet %s: used range %s.", name, used)
-		case name != "":
-			return "Worksheet " + name + "."
-		default:
-			return "Returned worksheet info."
-		}
+		return worksheetInfoSummary(data)
 	})
+}
+
+// worksheetInfoSummary describes a worksheet by name and used range when present.
+func worksheetInfoSummary(data any) string {
+	name := stringField(data, "name")
+	if name == "" {
+		return "Returned worksheet info."
+	}
+	if used := stringField(data, "usedRangeAddress"); used != "" {
+		return fmt.Sprintf("Worksheet %s: used range %s.", name, used)
+	}
+	return "Worksheet " + name + "."
 }
 
 const namedWorksheetSchema = `{
@@ -130,6 +136,7 @@ func ActivateWorksheet() tools.Tool {
 		Name:        "excel.activateWorksheet",
 		Description: "Activate a worksheet by name. Requires ExcelApi 1.7.",
 		Schema:      json.RawMessage(namedWorksheetSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runActivateWorksheet,
 	}
 }
@@ -150,6 +157,7 @@ func CreateWorksheet() tools.Tool {
 		Name:        "excel.createWorksheet",
 		Description: "Add a new worksheet to the workbook with the given name.",
 		Schema:      json.RawMessage(namedWorksheetSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(false)},
 		Run:         runCreateWorksheet,
 	}
 }
@@ -170,6 +178,7 @@ func DeleteWorksheet() tools.Tool {
 		Name:        "excel.deleteWorksheet",
 		Description: "Delete a worksheet by name. The active or last visible sheet may be protected by Excel.",
 		Schema:      json.RawMessage(namedWorksheetSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runDeleteWorksheet,
 	}
 }

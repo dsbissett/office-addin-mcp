@@ -18,6 +18,26 @@ const discoverSchema = `{
   "additionalProperties": false
 }`
 
+// discoverOutputSchema describes the success Data shape: the OneNote discover
+// payload (notebooks, active section, page list) merged with the cache metadata
+// (cached, filePath, fingerprint) that officetool.RunDiscover always adds.
+const discoverOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "onenote.discover result",
+  "type": "object",
+  "properties": {
+    "cached":            {"type": "boolean", "description": "True when the snapshot was served from the persistent doccache."},
+    "filePath":          {"type": "string", "description": "Active-section identity used as the cache key."},
+    "fingerprint":       {"type": "string", "description": "Content fingerprint used for cache freshness."},
+    "notebooks":         {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}}},
+    "activeSectionId":   {"type": "string"},
+    "activeSectionName": {"type": "string"},
+    "pages":             {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "string"}, "title": {"type": "string"}}}},
+    "pageCount":         {"type": "integer"}
+  },
+  "required": ["cached", "filePath", "fingerprint"]
+}`
+
 type discoverParams struct {
 	Force bool `json:"force,omitempty"`
 	officetool.SelectorFields
@@ -26,11 +46,12 @@ type discoverParams struct {
 // Discover returns the onenote.discover tool definition.
 func Discover() tools.Tool {
 	return tools.Tool{
-		Name:        "onenote.discover",
-		Description: "Cached OneNote discovery: notebooks, active section, pages in active section.",
-		Schema:      json.RawMessage(discoverSchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runDiscover,
+		Name:         "onenote.discover",
+		Description:  "Cached OneNote discovery: notebooks, active section, pages in active section.",
+		Schema:       json.RawMessage(discoverSchema),
+		OutputSchema: json.RawMessage(discoverOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runDiscover,
 	}
 }
 

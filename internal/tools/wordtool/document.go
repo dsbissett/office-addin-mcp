@@ -25,6 +25,7 @@ func ReadBody() tools.Tool {
 		Name:        "word.readBody",
 		Description: "Read the entire document body as plain text.",
 		Schema:      json.RawMessage(readBodySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadBody,
 	}
 }
@@ -68,6 +69,7 @@ func WriteBody() tools.Tool {
 		Name:        "word.writeBody",
 		Description: "Insert text into the document body, replacing or appending depending on location.",
 		Schema:      json.RawMessage(writeBodySchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true)},
 		Run:         runWriteBody,
 	}
 }
@@ -97,6 +99,7 @@ func ReadParagraphs() tools.Tool {
 		Name:        "word.readParagraphs",
 		Description: "List all paragraphs in the document body with their text and style.",
 		Schema:      json.RawMessage(readParagraphsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadParagraphs,
 	}
 }
@@ -136,6 +139,7 @@ func InsertParagraph() tools.Tool {
 		Name:        "word.insertParagraph",
 		Description: "Insert a paragraph into the document body and return its style.",
 		Schema:      json.RawMessage(insertParagraphSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(false)},
 		Run:         runInsertParagraph,
 	}
 }
@@ -167,6 +171,7 @@ func ReadSelection() tools.Tool {
 		Name:        "word.readSelection",
 		Description: "Read the text of the current selection in the document.",
 		Schema:      json.RawMessage(readBodySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadSelection,
 	}
 }
@@ -212,6 +217,7 @@ func SearchText() tools.Tool {
 		Name:        "word.searchText",
 		Description: "Search the document body for a substring; returns the text of each match.",
 		Schema:      json.RawMessage(searchTextSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runSearchText,
 	}
 }
@@ -241,6 +247,7 @@ func ReadProperties() tools.Tool {
 		Name:        "word.readProperties",
 		Description: "Read the document's built-in properties (title, author, dates, etc.).",
 		Schema:      json.RawMessage(readBodySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadProperties,
 	}
 }

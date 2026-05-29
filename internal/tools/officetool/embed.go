@@ -82,7 +82,16 @@ func Embed() tools.Tool {
 		Name:        "office.embed",
 		Description: "Copy values from an Excel range onto a PowerPoint slide as a text table shape. Source/target are independent CDP targets on the same debug endpoint.",
 		Schema:      json.RawMessage(embedSchema),
-		Run:         runEmbed,
+		// Mutating: reads the Excel source but inserts a NEW text-box shape on
+		// the PowerPoint slide (additive, not an overwrite/delete), so
+		// DestructiveHint is false and the call is not idempotent (each call
+		// adds another shape). OpenWorldHint is true: it orchestrates across
+		// arbitrary, independent CDP targets on the same debug endpoint.
+		Annotations: &tools.Annotations{
+			DestructiveHint: tools.BoolPtr(false),
+			OpenWorldHint:   tools.BoolPtr(true),
+		},
+		Run: runEmbed,
 	}
 }
 
@@ -92,60 +101,102 @@ func runEmbed(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
 
-	srcSel := tools.TargetSelector{TargetID: p.Source.TargetID, URLPattern: p.Source.URLPattern}
-	srcAtt, err := env.Attach(ctx, srcSel)
-	if err != nil {
-		return failAttach("source", err)
-	}
-	srcExec := officejs.New(srcAtt.Conn, srcAtt.SessionID)
-	srcArgs := map[string]any{"address": p.Source.Address}
-	if p.Source.Sheet != "" {
-		srcArgs["sheet"] = p.Source.Sheet
-	}
-	srcRaw, err := srcExec.Run(ctx, "excel.readRange", srcArgs)
-	if err != nil {
-		return failPayload("source", "Excel", err)
-	}
-	var srcData map[string]any
-	if err := json.Unmarshal(srcRaw, &srcData); err != nil {
-		return tools.Fail(tools.CategoryInternal, "decode_source", err.Error(), false)
-	}
-	values, _ := srcData["values"].([]any)
-	if len(values) == 0 {
-		return tools.Fail(tools.CategoryValidation, "empty_source", "source range read returned no rows", false)
+	srcData, values, fail := embedReadSource(ctx, env, p.Source)
+	if fail != nil {
+		return *fail
 	}
 
-	tgtSel := tools.TargetSelector{TargetID: p.Target.TargetID, URLPattern: p.Target.URLPattern}
-	tgtAtt, err := env.Attach(ctx, tgtSel)
-	if err != nil {
-		return failAttach("target", err)
+	tgtData, fail := embedWriteTarget(ctx, env, p.Target, values)
+	if fail != nil {
+		return *fail
 	}
-	tgtExec := officejs.New(tgtAtt.Conn, tgtAtt.SessionID)
-	tgtArgs := map[string]any{
-		"slideIndex": p.Target.SlideIndex,
+
+	return embedResult(srcData, tgtData, p.Target.SlideIndex)
+}
+
+// embedReadSource attaches to the Excel source, reads the requested range, and
+// returns the decoded payload plus its row slice. A non-nil *tools.Result is the
+// failure to return; on success it is nil.
+func embedReadSource(ctx context.Context, env *tools.RunEnv, src embedSource) (map[string]any, []any, *tools.Result) {
+	att, err := env.Attach(ctx, tools.TargetSelector{TargetID: src.TargetID, URLPattern: src.URLPattern})
+	if err != nil {
+		res := failAttach("source", err)
+		return nil, nil, &res
+	}
+	raw, err := officejs.New(att.Conn, att.SessionID).Run(ctx, "excel.readRange", embedSourceArgs(src))
+	if err != nil {
+		res := failPayload("source", "Excel", err)
+		return nil, nil, &res
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		res := tools.Fail(tools.CategoryInternal, "decode_source", err.Error(), false)
+		return nil, nil, &res
+	}
+	values, _ := data["values"].([]any)
+	if len(values) == 0 {
+		res := tools.Fail(tools.CategoryValidation, "empty_source", "source range read returned no rows", false)
+		return nil, nil, &res
+	}
+	return data, values, nil
+}
+
+// embedSourceArgs builds the excel.readRange arguments, including the optional
+// sheet selector.
+func embedSourceArgs(src embedSource) map[string]any {
+	args := map[string]any{"address": src.Address}
+	if src.Sheet != "" {
+		args["sheet"] = src.Sheet
+	}
+	return args
+}
+
+// embedWriteTarget attaches to the PowerPoint target and inserts the rows as a
+// text-table shape. A non-nil *tools.Result is the failure to return.
+func embedWriteTarget(ctx context.Context, env *tools.RunEnv, tgt embedTarget, values []any) (map[string]any, *tools.Result) {
+	att, err := env.Attach(ctx, tools.TargetSelector{TargetID: tgt.TargetID, URLPattern: tgt.URLPattern})
+	if err != nil {
+		res := failAttach("target", err)
+		return nil, &res
+	}
+	raw, err := officejs.New(att.Conn, att.SessionID).Run(ctx, "powerpoint.insertTextTable", embedTargetArgs(tgt, values))
+	if err != nil {
+		res := failPayload("target", "PowerPoint", err)
+		return nil, &res
+	}
+	var data map[string]any
+	if err := json.Unmarshal(raw, &data); err != nil {
+		res := tools.Fail(tools.CategoryInternal, "decode_target", err.Error(), false)
+		return nil, &res
+	}
+	return data, nil
+}
+
+// embedTargetArgs builds the powerpoint.insertTextTable arguments, including any
+// supplied geometry overrides.
+func embedTargetArgs(tgt embedTarget, values []any) map[string]any {
+	args := map[string]any{
+		"slideIndex": tgt.SlideIndex,
 		"rows":       values,
 	}
-	if p.Target.Left != nil {
-		tgtArgs["left"] = *p.Target.Left
+	if tgt.Left != nil {
+		args["left"] = *tgt.Left
 	}
-	if p.Target.Top != nil {
-		tgtArgs["top"] = *p.Target.Top
+	if tgt.Top != nil {
+		args["top"] = *tgt.Top
 	}
-	if p.Target.Width != nil {
-		tgtArgs["width"] = *p.Target.Width
+	if tgt.Width != nil {
+		args["width"] = *tgt.Width
 	}
-	if p.Target.Height != nil {
-		tgtArgs["height"] = *p.Target.Height
+	if tgt.Height != nil {
+		args["height"] = *tgt.Height
 	}
-	tgtRaw, err := tgtExec.Run(ctx, "powerpoint.insertTextTable", tgtArgs)
-	if err != nil {
-		return failPayload("target", "PowerPoint", err)
-	}
-	var tgtData map[string]any
-	if err := json.Unmarshal(tgtRaw, &tgtData); err != nil {
-		return tools.Fail(tools.CategoryInternal, "decode_target", err.Error(), false)
-	}
+	return args
+}
 
+// embedResult assembles the success envelope and human summary from the source
+// and target payloads.
+func embedResult(srcData, tgtData map[string]any, slideIndex int) tools.Result {
 	out := map[string]any{
 		"source": map[string]any{
 			"address":     srcData["address"],
@@ -157,7 +208,7 @@ func runEmbed(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	rowCount, _ := srcData["rowCount"].(float64)
 	colCount, _ := srcData["columnCount"].(float64)
 	res := tools.OK(out)
-	res.Summary = fmt.Sprintf("Embedded %dx%d range onto slide %d.", int(rowCount), int(colCount), p.Target.SlideIndex)
+	res.Summary = fmt.Sprintf("Embedded %dx%d range onto slide %d.", int(rowCount), int(colCount), slideIndex)
 	return res
 }
 

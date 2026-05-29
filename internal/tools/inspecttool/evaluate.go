@@ -42,8 +42,18 @@ func Evaluate() tools.Tool {
 		Name:        "page.evaluate",
 		Description: "Run a JS expression in the active page (or the chosen target/surface) via Runtime.evaluate. Use as a controlled escape hatch when no higher-level tool fits. Requires the add-in to be running: call addin.ensureRunning first — otherwise this fails to attach, or the page's own fetch() calls return \"Failed to fetch\". When awaiting an async function, have it return a value so success can be confirmed (an undefined result is reported as a warning, not proof of success).",
 		Schema:      json.RawMessage(evaluateSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true), OpenWorldHint: tools.BoolPtr(true)},
 		Run:         runEvaluate,
 	}
+}
+
+// evaluateOutput is a type alias (not a defined type) so res.Data keeps the
+// exact anonymous-struct dynamic type the original inline literal produced,
+// preserving callers' type assertions on the envelope.
+type evaluateOutput = struct {
+	Type        string          `json:"type"`
+	Value       json.RawMessage `json:"value,omitempty"`
+	Description string          `json:"description,omitempty"`
 }
 
 func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools.Result {
@@ -51,72 +61,94 @@ func runEvaluate(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) to
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	returnByValue := true
-	if p.ReturnByValue != nil {
-		returnByValue = *p.ReturnByValue
-	}
 
 	att, err := env.Attach(ctx, makeSelector(p.TargetID, p.URLPattern, p.Surface))
 	if err != nil {
-		return tools.Result{
-			Err: &tools.EnvelopeError{
-				Code:         "attach_failed",
-				Message:      err.Error(),
-				Category:     tools.CategoryNotFound,
-				RecoveryHint: "Could not attach to a page target — the add-in is likely not running. Call addin.ensureRunning, then retry.",
-				Details:      map[string]any{"recoverableViaTool": "addin.ensureRunning"},
-			},
-			Summary: "Could not attach to a page target; call addin.ensureRunning first.",
-		}
+		return evaluateAttachFailure(err)
 	}
 	res, err := att.Conn.Evaluate(ctx, att.SessionID, cdpproto.EvaluateParams{
 		Expression:    p.Expression,
 		AwaitPromise:  p.AwaitPromise,
-		ReturnByValue: returnByValue,
+		ReturnByValue: evaluateReturnByValue(p),
 		UserGesture:   true,
 	})
 	if err != nil {
 		return tools.ClassifyCDPErr("evaluate_failed", err)
 	}
 	if res.ExceptionDetails != nil {
-		msg := res.ExceptionDetails.String()
-		// A "Failed to fetch" thrown by the evaluated script means the page
-		// reached the JS runtime fine but could not reach a (usually local)
-		// HTTP endpoint — the dev server or add-in backend is down. Translate
-		// the opaque stack trace into a directed action instead of surfacing it
-		// raw.
-		if isFetchFailure(msg) {
-			return tools.Result{
-				Err: &tools.EnvelopeError{
-					Code:         "fetch_failed",
-					Message:      msg,
-					Category:     tools.CategoryConnection,
-					Retryable:    true,
-					RecoveryHint: `The evaluated script failed to reach a local endpoint ("Failed to fetch"). The dev server or add-in backend may not be running — call addin.ensureRunning and retry.`,
-					Details:      map[string]any{"recoverableViaTool": "addin.ensureRunning"},
-				},
-				Summary: "JS fetch failed to reach a local endpoint; call addin.ensureRunning and retry.",
-			}
-		}
+		return evaluateExceptionResult(res.ExceptionDetails.String())
+	}
+	return evaluateSuccessResult(p, buildEvaluateOutput(res))
+}
+
+// evaluateReturnByValue resolves the returnByValue knob, defaulting to true.
+func evaluateReturnByValue(p evaluateParams) bool {
+	if p.ReturnByValue != nil {
+		return *p.ReturnByValue
+	}
+	return true
+}
+
+// evaluateAttachFailure builds the directed failure for an attach error.
+func evaluateAttachFailure(err error) tools.Result {
+	return tools.Result{
+		Err: &tools.EnvelopeError{
+			Code:         "attach_failed",
+			Message:      err.Error(),
+			Category:     tools.CategoryNotFound,
+			RecoveryHint: "Could not attach to a page target — the add-in is likely not running. Call addin.ensureRunning, then retry.",
+			Details:      map[string]any{"recoverableViaTool": "addin.ensureRunning"},
+		},
+		Summary: "Could not attach to a page target; call addin.ensureRunning first.",
+	}
+}
+
+// evaluateExceptionResult translates a thrown-exception message into the
+// directed fetch-failure result or the generic evaluation-exception result.
+func evaluateExceptionResult(msg string) tools.Result {
+	// A "Failed to fetch" thrown by the evaluated script means the page
+	// reached the JS runtime fine but could not reach a (usually local)
+	// HTTP endpoint — the dev server or add-in backend is down. Translate
+	// the opaque stack trace into a directed action instead of surfacing it
+	// raw.
+	if isFetchFailure(msg) {
 		return tools.Result{
 			Err: &tools.EnvelopeError{
-				Code:     "evaluation_exception",
-				Message:  msg,
-				Category: tools.CategoryProtocol,
+				Code:         "fetch_failed",
+				Message:      msg,
+				Category:     tools.CategoryConnection,
+				Retryable:    true,
+				RecoveryHint: `The evaluated script failed to reach a local endpoint ("Failed to fetch"). The dev server or add-in backend may not be running — call addin.ensureRunning and retry.`,
+				Details:      map[string]any{"recoverableViaTool": "addin.ensureRunning"},
 			},
-			Summary: "JS evaluation threw: " + msg,
+			Summary: "JS fetch failed to reach a local endpoint; call addin.ensureRunning and retry.",
 		}
 	}
-	out := struct {
-		Type        string          `json:"type"`
-		Value       json.RawMessage `json:"value,omitempty"`
-		Description string          `json:"description,omitempty"`
-	}{}
+	return tools.Result{
+		Err: &tools.EnvelopeError{
+			Code:     "evaluation_exception",
+			Message:  msg,
+			Category: tools.CategoryProtocol,
+		},
+		Summary: "JS evaluation threw: " + msg,
+	}
+}
+
+// buildEvaluateOutput projects the CDP evaluate result into the tool's output
+// shape, tolerating a nil result.
+func buildEvaluateOutput(res *cdpproto.EvaluateResult) evaluateOutput {
+	out := evaluateOutput{}
 	if res.Result != nil {
 		out.Type = res.Result.Type
 		out.Value = res.Result.Value
 		out.Description = res.Result.Description
 	}
+	return out
+}
+
+// evaluateSuccessResult builds the OK result, flagging the awaited-undefined
+// false-positive case described inline.
+func evaluateSuccessResult(p evaluateParams, out evaluateOutput) tools.Result {
 	// An awaited promise that resolves to undefined is a frequent false
 	// positive: the call "succeeded" but produced no evidence it did the work.
 	// Flag it so the caller verifies rather than assuming success.

@@ -23,6 +23,7 @@ func ListCharts() tools.Tool {
 		Name:        "excel.listCharts",
 		Description: "List charts across worksheets: name, id, worksheet, type, title, position, size.",
 		Schema:      json.RawMessage(listChartsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListCharts,
 	}
 }
@@ -64,6 +65,7 @@ func ChartInfo() tools.Tool {
 		Name:        "excel.chartInfo",
 		Description: "Detailed information about a chart: type, title, series names, axis titles, position.",
 		Schema:      json.RawMessage(chartInfoSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runChartInfo,
 	}
 }
@@ -114,6 +116,7 @@ func ChartImage() tools.Tool {
 		Name:        "excel.chartImage",
 		Description: "Render a chart as a PNG image. The MCP response carries it as an ImageContent block.",
 		Schema:      json.RawMessage(chartImageSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runChartImage,
 	}
 }

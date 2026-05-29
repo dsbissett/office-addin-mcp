@@ -33,6 +33,7 @@ func Hover() tools.Tool {
 		Name:        "page.hover",
 		Description: "Hover the mouse over a snapshot UID by dispatching Input.dispatchMouseEvent type=mouseMoved at its center.",
 		Schema:      json.RawMessage(hoverSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true), IdempotentHint: true},
 		Run:         runHover,
 	}
 }

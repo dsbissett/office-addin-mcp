@@ -25,6 +25,7 @@ func ReadItem() tools.Tool {
 		Name:        "outlook.readItem",
 		Description: "Read core properties of the currently selected mailbox item: subject, itemType, itemClass, conversationId, dates, itemId.",
 		Schema:      json.RawMessage(readItemSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadItem,
 	}
 }
@@ -65,6 +66,7 @@ func GetBody() tools.Tool {
 		Name:        "outlook.getBody",
 		Description: "Read the body of the currently selected mailbox item via item.body.getAsync. Defaults to text coercion.",
 		Schema:      json.RawMessage(bodySchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runGetBody,
 	}
 }
@@ -110,6 +112,7 @@ func SetBody() tools.Tool {
 		Name:        "outlook.setBody",
 		Description: "Set the body of the currently composed mailbox item via item.body.setAsync. Compose mode only.",
 		Schema:      json.RawMessage(setBodySchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runSetBody,
 	}
 }
@@ -136,6 +139,7 @@ func GetSubject() tools.Tool {
 		Name:        "outlook.getSubject",
 		Description: "Read the subject of the currently selected mailbox item. Works in both read and compose modes.",
 		Schema:      json.RawMessage(readItemSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runGetSubject,
 	}
 }
@@ -178,6 +182,7 @@ func SetSubject() tools.Tool {
 		Name:        "outlook.setSubject",
 		Description: "Set the subject of the currently composed mailbox item via item.subject.setAsync. Compose mode only.",
 		Schema:      json.RawMessage(setSubjectSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runSetSubject,
 	}
 }
@@ -200,6 +205,7 @@ func GetRecipients() tools.Tool {
 		Name:        "outlook.getRecipients",
 		Description: "Read To and Cc recipients on the currently selected mailbox item. Works in both read and compose modes.",
 		Schema:      json.RawMessage(readItemSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runGetRecipients,
 	}
 }

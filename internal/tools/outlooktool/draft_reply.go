@@ -34,6 +34,10 @@ func DraftReply() tools.Tool {
 		Name:        "outlook.draftReply",
 		Description: "Set subject and/or body on a compose-mode Outlook item in one call.",
 		Schema:      json.RawMessage(draftReplySchema),
+		// Sets (overwrites) the compose item's subject/body — a destructive
+		// update under the MCP spec (not additive-only). Idempotent: setting the
+		// same fields again yields the same end state.
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runDraftReply,
 	}
 }
@@ -46,6 +50,12 @@ func runDraftReply(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if p.Subject == nil && p.Body == nil {
 		return tools.Fail(tools.CategoryValidation, "nothing_to_set", "draftReply requires at least one of: subject, body", false)
 	}
+	args := draftReplyArgs(p)
+	return runPayloadSum(ctx, env, p.Selector(), "outlook.draftReply", args, draftReplySummary(p))
+}
+
+// draftReplyArgs assembles the Office.js payload arguments from the parsed params.
+func draftReplyArgs(p draftReplyParams) map[string]any {
 	args := map[string]any{}
 	if p.Subject != nil {
 		args["subject"] = *p.Subject
@@ -56,7 +66,12 @@ func runDraftReply(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if ct := strings.ToLower(p.CoercionType); ct == "html" || ct == "text" {
 		args["coercionType"] = ct
 	}
-	return runPayloadSum(ctx, env, p.Selector(), "outlook.draftReply", args, func(_ any) string {
+	return args
+}
+
+// draftReplySummary returns a summary closure describing which fields were set.
+func draftReplySummary(p draftReplyParams) func(any) string {
+	return func(_ any) string {
 		var fields []string
 		if p.Subject != nil {
 			fields = append(fields, "subject")
@@ -65,5 +80,5 @@ func runDraftReply(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 			fields = append(fields, "body")
 		}
 		return "Drafted reply: set " + strings.Join(fields, " + ") + "."
-	})
+	}
 }

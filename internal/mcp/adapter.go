@@ -114,30 +114,44 @@ func envelopeToResult(env tools.Envelope, emitStructured bool) *sdk.CallToolResu
 		content = append(content, &sdk.TextContent{Text: env.Summary})
 	}
 	if env.OK {
-		if img, ok := imageFromData(env.Data); ok {
-			res.Content = append(content, img)
-			return res
-		}
-		body, err := json.Marshal(env.Data)
-		if err != nil {
-			res.IsError = true
-			res.Content = append(content, &sdk.TextContent{Text: marshalFallback(err)})
-			return res
-		}
-		res.Content = append(content, &sdk.TextContent{Text: string(body)})
-		if emitStructured {
-			res.StructuredContent = env.Data
-		}
+		fillSuccessResult(res, content, env, emitStructured)
 		return res
 	}
-	res.IsError = true
-	body, err := json.Marshal(env.Error)
+	fillErrorResult(res, content, env.Error)
+	return res
+}
+
+// fillSuccessResult populates res for a successful envelope: an inline image
+// block when the data looks like a screenshot, otherwise the JSON-encoded data
+// as a TextContent (plus StructuredContent when the tool declared an output
+// schema). A marshal failure flips res into an error result.
+func fillSuccessResult(res *sdk.CallToolResult, content []sdk.Content, env tools.Envelope, emitStructured bool) {
+	if img, ok := imageFromData(env.Data); ok {
+		res.Content = append(content, img)
+		return
+	}
+	body, err := json.Marshal(env.Data)
 	if err != nil {
+		res.IsError = true
 		res.Content = append(content, &sdk.TextContent{Text: marshalFallback(err)})
-		return res
+		return
 	}
 	res.Content = append(content, &sdk.TextContent{Text: string(body)})
-	return res
+	if emitStructured {
+		res.StructuredContent = env.Data
+	}
+}
+
+// fillErrorResult marks res as an error and appends the JSON-encoded
+// EnvelopeError (or a marshal fallback) as a TextContent block.
+func fillErrorResult(res *sdk.CallToolResult, content []sdk.Content, envErr *tools.EnvelopeError) {
+	res.IsError = true
+	body, err := json.Marshal(envErr)
+	if err != nil {
+		res.Content = append(content, &sdk.TextContent{Text: marshalFallback(err)})
+		return
+	}
+	res.Content = append(content, &sdk.TextContent{Text: string(body)})
 }
 
 // imageFromData detects the page.screenshot in-band envelope and converts it
@@ -145,25 +159,36 @@ func envelopeToResult(env tools.Envelope, emitStructured bool) *sdk.CallToolResu
 // CDP; ImageContent.Data is []byte that the SDK re-base64-encodes on the
 // wire, so we decode first to avoid double-encoding.
 func imageFromData(data any) (*sdk.ImageContent, bool) {
-	body, err := json.Marshal(data)
+	mimeType, encoded, ok := decodeImageProbe(data)
+	if !ok {
+		return nil, false
+	}
+	bytes, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
 		return nil, false
+	}
+	return &sdk.ImageContent{MIMEType: mimeType, Data: bytes}, true
+}
+
+// decodeImageProbe re-marshals data and probes it for the screenshot envelope
+// shape (`{mimeType, data}` with an image/* mime and non-empty data). It returns
+// the mime type, the still-base64-encoded data, and whether the probe matched.
+func decodeImageProbe(data any) (mimeType, encoded string, ok bool) {
+	body, err := json.Marshal(data)
+	if err != nil {
+		return "", "", false
 	}
 	var probe struct {
 		MimeType string `json:"mimeType"`
 		Data     string `json:"data"`
 	}
 	if err := json.Unmarshal(body, &probe); err != nil {
-		return nil, false
+		return "", "", false
 	}
 	if probe.Data == "" || !strings.HasPrefix(probe.MimeType, "image/") {
-		return nil, false
+		return "", "", false
 	}
-	bytes, err := base64.StdEncoding.DecodeString(probe.Data)
-	if err != nil {
-		return nil, false
-	}
-	return &sdk.ImageContent{MIMEType: probe.MimeType, Data: bytes}, true
+	return probe.MimeType, probe.Data, true
 }
 
 func marshalFallback(err error) string {

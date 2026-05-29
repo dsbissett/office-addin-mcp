@@ -78,6 +78,33 @@ type Server struct {
 // Tool registration happens here so the SDK's tools/list response is fully
 // populated by the time Run is called.
 func NewServer(opts Options) *Server {
+	opts = applyDefaults(opts)
+
+	s := &Server{endpoint: opts.Endpoint}
+	s.disp = newDispatcher(s, opts)
+	s.resourceProvider = &resources.Provider{
+		Disp:     s.disp,
+		Endpoint: s.currentEndpoint,
+		Cache:    opts.DocCache,
+	}
+	s.resourceWatcher = resources.NewWatcher(s.resourceProvider, func(ctx context.Context, uri string) {
+		_ = s.sdk.ResourceUpdated(ctx, &sdk.ResourceUpdatedNotificationParams{URI: uri})
+	})
+	s.sdk = newSDKServer(s, opts)
+
+	for _, t := range opts.Registry.List() {
+		s.registerTool(t)
+	}
+	s.registerMacroTools(opts)
+	registerResources(s.sdk, s.resourceProvider)
+	registerPrompts(s.sdk)
+
+	return s
+}
+
+// applyDefaults validates required options and fills in zero-value fields with
+// their defaults. It panics if a required option (Registry) is missing.
+func applyDefaults(opts Options) Options {
 	if opts.Registry == nil {
 		panic("mcp.NewServer: Registry is required")
 	}
@@ -87,17 +114,25 @@ func NewServer(opts Options) *Server {
 	if opts.Version == "" {
 		opts.Version = "0.0.0-dev"
 	}
+	return defaultDependencies(opts)
+}
+
+// defaultDependencies fills the optional collaborator fields (Sessions,
+// DocCache) with their defaults when the caller left them nil.
+func defaultDependencies(opts Options) Options {
 	if opts.Sessions == nil {
 		opts.Sessions = session.NewManager(session.Config{})
 	}
 	if opts.DocCache == nil {
 		opts.DocCache = doccache.Open("", false)
 	}
+	return opts
+}
 
-	s := &Server{endpoint: opts.Endpoint}
-
-	// Create the dispatcher before building SDK server and resources.
-	s.disp = &tools.Dispatcher{
+// newDispatcher builds the tools.Dispatcher backing the server, wiring the
+// auto-recovery hook unless the caller disabled it.
+func newDispatcher(s *Server, opts Options) *tools.Dispatcher {
+	disp := &tools.Dispatcher{
 		Registry:       opts.Registry,
 		Sessions:       opts.Sessions,
 		AllowDangerous: opts.AllowDangerous,
@@ -108,23 +143,15 @@ func NewServer(opts Options) *Server {
 		Recorder:       opts.Recorder,
 	}
 	if !opts.DisableAutoRecover {
-		s.disp.Recover = s.recoverConnection
+		disp.Recover = s.recoverConnection
 	}
+	return disp
+}
 
-	// Create the resource provider.
-	s.resourceProvider = &resources.Provider{
-		Disp:     s.disp,
-		Endpoint: s.currentEndpoint,
-		Cache:    opts.DocCache,
-	}
-
-	// Create the resource watcher with a notify callback.
-	s.resourceWatcher = resources.NewWatcher(s.resourceProvider, func(ctx context.Context, uri string) {
-		_ = s.sdk.ResourceUpdated(ctx, &sdk.ResourceUpdatedNotificationParams{URI: uri})
-	})
-
-	// Build SDK server with subscription handlers.
-	sdkServer := sdk.NewServer(&sdk.Implementation{
+// newSDKServer constructs the underlying SDK server with the resource
+// subscribe/unsubscribe handlers bound to the server's resource watcher.
+func newSDKServer(s *Server, opts Options) *sdk.Server {
+	return sdk.NewServer(&sdk.Implementation{
 		Name:    opts.Name,
 		Version: opts.Version,
 	}, &sdk.ServerOptions{
@@ -135,36 +162,35 @@ func NewServer(opts Options) *Server {
 			s.resourceWatcher.Unsubscribe(req.Params.URI)
 			return nil
 		},
+		CompletionHandler: s.handleComplete,
 	})
+}
 
-	s.sdk = sdkServer
-
-	// Register tools.
-	for _, t := range opts.Registry.List() {
-		s.registerTool(t)
+// registerMacroTools loads any persisted macros and registers a replay tool for
+// each. No-op when no recorder is configured.
+func (s *Server) registerMacroTools(opts Options) {
+	if opts.Recorder == nil {
+		return
 	}
-
-	// Load and register macro tools if the recorder is available.
-	if opts.Recorder != nil {
-		if _, err := opts.Recorder.LoadAll(); err == nil {
-			// For each loaded macro, create and register a replay tool.
-			for _, macroName := range opts.Recorder.List() {
-				macro, _ := opts.Recorder.Get(macroName)
-				if macro != nil {
-					// Create a replay tool that uses the dispatcher to execute recorded steps.
-					macroTool := createMacroReplayTool(macro, s.disp)
-					if err := opts.Registry.Register(macroTool); err == nil {
-						s.registerTool(&macroTool)
-					}
-				}
-			}
-		}
+	if _, err := opts.Recorder.LoadAll(); err != nil {
+		return
 	}
+	for _, macroName := range opts.Recorder.List() {
+		s.registerMacroTool(opts, macroName)
+	}
+}
 
-	// Register resources.
-	registerResources(s.sdk, s.resourceProvider)
-
-	return s
+// registerMacroTool creates and registers a single macro replay tool. Missing
+// macros and registration failures are silently skipped, matching prior behavior.
+func (s *Server) registerMacroTool(opts Options, macroName string) {
+	macro, _ := opts.Recorder.Get(macroName)
+	if macro == nil {
+		return
+	}
+	macroTool := createMacroReplayTool(macro, s.disp)
+	if err := opts.Registry.Register(macroTool); err == nil {
+		s.registerTool(&macroTool)
+	}
 }
 
 // setEndpoint atomically replaces the default CDP endpoint used by every
@@ -222,11 +248,8 @@ func (s *Server) recoverConnection(ctx context.Context) (webview2.Config, error)
 		return webview2.Config{}, errors.New("no tracked launch to recover (endpoint may be external)")
 	}
 
-	for _, t := range tracked {
-		if launch.ProbeCDPEndpoint(ctx, t.CDPURL, recoveryProbeTimeout).OK {
-			s.disp.Sessions.DropAll()
-			return webview2.Config{BrowserURL: t.CDPURL}, nil
-		}
+	if cfg, ok := s.reuseLiveLaunch(ctx, tracked); ok {
+		return cfg, nil
 	}
 
 	// All tracked launches are dead. Capture the project before StopAll clears
@@ -235,10 +258,30 @@ func (s *Server) recoverConnection(ctx context.Context) (webview2.Config, error)
 	if project == nil {
 		return webview2.Config{}, errors.New("tracked launch has no project to relaunch")
 	}
+	return s.relaunchProject(project)
+}
+
+// reuseLiveLaunch probes each tracked launch and, if any already responds (a
+// peer recovered, or the failure was transient), resets the session pool and
+// returns that endpoint.
+func (s *Server) reuseLiveLaunch(ctx context.Context, tracked []*launch.TrackedLaunch) (webview2.Config, bool) {
+	for _, t := range tracked {
+		if launch.ProbeCDPEndpoint(ctx, t.CDPURL, recoveryProbeTimeout).OK {
+			s.disp.Sessions.DropAll()
+			return webview2.Config{BrowserURL: t.CDPURL}, true
+		}
+	}
+	return webview2.Config{}, false
+}
+
+// relaunchProject stops every tracked launch to clear stale sideload state, does
+// a fresh LaunchExcel, points the server at the new endpoint, resets the session
+// pool, and returns the live endpoint.
+func (s *Server) relaunchProject(project *launch.Project) (webview2.Config, error) {
 	launch.StopAll()
-	// Use a fresh context for the relaunch — the request context (ctx) may have
-	// only seconds left after the initial dial failure, nowhere near the ~60 s
-	// Excel needs to start. 90 s covers the dev-server + CDP-ready sequence.
+	// Use a fresh context for the relaunch — the request context may have only
+	// seconds left after the initial dial failure, nowhere near the ~60 s Excel
+	// needs to start. 90 s covers the dev-server + CDP-ready sequence.
 	launchCtx, launchCancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer launchCancel()
 	res, err := launch.LaunchExcel(launchCtx, project, launch.LaunchOptions{})

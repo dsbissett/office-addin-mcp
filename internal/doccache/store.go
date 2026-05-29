@@ -116,10 +116,7 @@ func (s *Store) Get(host, filePath string) (Entry, bool) {
 // success or any I/O error encountered during persist. Disabled stores are a
 // no-op and return nil.
 func (s *Store) Put(e Entry) error {
-	if s == nil || s.disabled {
-		return nil
-	}
-	if !cacheable(e.FilePath) {
+	if s.skipPut(e.FilePath) {
 		return nil
 	}
 	if e.UpdatedAt.IsZero() {
@@ -132,6 +129,12 @@ func (s *Store) Put(e Entry) error {
 	}
 	s.entries[key(e.Host, e.FilePath)] = e
 	return s.saveLocked()
+}
+
+// skipPut reports whether a Put should be a no-op: disabled/nil stores and
+// non-cacheable file paths both bypass persistence.
+func (s *Store) skipPut(filePath string) bool {
+	return s == nil || s.disabled || !cacheable(filePath)
 }
 
 // List returns every cached entry for a host, most-recently-updated first.
@@ -147,12 +150,26 @@ func (s *Store) List(host string) []Entry {
 	if err := s.loadLocked(); err != nil {
 		return nil
 	}
+	out := s.entriesForHost(host)
+	sortByUpdatedDesc(out)
+	return out
+}
+
+// entriesForHost collects every loaded entry matching host, in map-iteration
+// order. The caller holds s.mu.
+func (s *Store) entriesForHost(host string) []Entry {
 	var out []Entry
 	for _, e := range s.entries {
 		if e.Host == host {
 			out = append(out, e)
 		}
 	}
+	return out
+}
+
+// sortByUpdatedDesc orders entries most-recently-updated first using the same
+// in-place selection sort the cache has always used (stable for List's needs).
+func sortByUpdatedDesc(out []Entry) {
 	for i := 0; i < len(out); i++ {
 		for j := i + 1; j < len(out); j++ {
 			if out[j].UpdatedAt.After(out[i].UpdatedAt) {
@@ -160,7 +177,6 @@ func (s *Store) List(host string) []Entry {
 			}
 		}
 	}
-	return out
 }
 
 // Invalidate drops the cached entry for (host, filePath). No error if absent.
@@ -185,16 +201,9 @@ func (s *Store) loadLocked() error {
 	if s.entries == nil {
 		s.entries = map[string]Entry{}
 	}
-	raw, err := os.ReadFile(s.path)
+	on, err := s.readDiskFile()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("doccache: read %s: %w", s.path, err)
-	}
-	var on diskFile
-	if err := json.Unmarshal(raw, &on); err != nil {
-		return fmt.Errorf("doccache: decode %s: %w", s.path, err)
+		return err
 	}
 	for _, e := range on.Entries {
 		s.entries[key(e.Host, e.FilePath)] = e
@@ -202,41 +211,83 @@ func (s *Store) loadLocked() error {
 	return nil
 }
 
-func (s *Store) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
-		return fmt.Errorf("doccache: mkdir %s: %w", filepath.Dir(s.path), err)
+// readDiskFile reads and decodes the backing file. A missing file decodes to
+// an empty diskFile with no error (first run); other read/decode failures are
+// wrapped. The caller holds s.mu.
+func (s *Store) readDiskFile() (diskFile, error) {
+	raw, err := os.ReadFile(s.path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return diskFile{}, nil
+		}
+		return diskFile{}, fmt.Errorf("doccache: read %s: %w", s.path, err)
 	}
+	var on diskFile
+	if err := json.Unmarshal(raw, &on); err != nil {
+		return diskFile{}, fmt.Errorf("doccache: decode %s: %w", s.path, err)
+	}
+	return on, nil
+}
+
+func (s *Store) saveLocked() error {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("doccache: mkdir %s: %w", dir, err)
+	}
+	raw, err := s.encodeLocked()
+	if err != nil {
+		return err
+	}
+	return writeAtomic(dir, s.path, raw)
+}
+
+// encodeLocked snapshots the loaded entries into the on-disk diskFile schema
+// and marshals them. The caller holds s.mu.
+func (s *Store) encodeLocked() ([]byte, error) {
 	on := diskFile{Version: 1}
 	for _, e := range s.entries {
 		on.Entries = append(on.Entries, e)
 	}
 	raw, err := json.MarshalIndent(on, "", "  ")
 	if err != nil {
-		return fmt.Errorf("doccache: encode: %w", err)
+		return nil, fmt.Errorf("doccache: encode: %w", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), "doccache-*.tmp")
+	return raw, nil
+}
+
+// writeAtomic writes raw to a temp file in dir (mode 0600) and renames it over
+// dst, removing the temp file on any failure. dir must already exist.
+func writeAtomic(dir, dst string, raw []byte) error {
+	tmp, err := os.CreateTemp(dir, "doccache-*.tmp")
 	if err != nil {
 		return fmt.Errorf("doccache: tmp: %w", err)
 	}
 	tmpPath := tmp.Name()
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
+	if step, err := finalizeTemp(tmp, tmpPath, dst, raw); err != nil {
 		_ = os.Remove(tmpPath)
-		return fmt.Errorf("doccache: write tmp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("doccache: close tmp: %w", err)
-	}
-	if err := os.Chmod(tmpPath, 0o600); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("doccache: chmod tmp: %w", err)
-	}
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("doccache: rename tmp: %w", err)
+		return fmt.Errorf("doccache: %s: %w", step, err)
 	}
 	return nil
+}
+
+// finalizeTemp writes raw to the open temp file, closes it, sets mode 0600, and
+// renames it over dst. On failure it returns the step label for the error
+// message and leaves temp-file cleanup to the caller.
+func finalizeTemp(tmp *os.File, tmpPath, dst string, raw []byte) (string, error) {
+	if _, err := tmp.Write(raw); err != nil {
+		_ = tmp.Close()
+		return "write tmp", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "close tmp", err
+	}
+	if err := os.Chmod(tmpPath, 0o600); err != nil {
+		return "chmod tmp", err
+	}
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return "rename tmp", err
+	}
+	return "", nil
 }
 
 // cacheable filters out empty / temp file paths the plan flagged as bad cache

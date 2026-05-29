@@ -76,15 +76,22 @@ func parseRemoteDebuggingPorts(blob string) []int {
 	seen := map[int]bool{}
 	ports := make([]int, 0, len(matches))
 	for _, m := range matches {
-		p, err := strconv.Atoi(m[1])
-		if err != nil || p <= 0 || p > 65535 {
-			continue
-		}
-		if seen[p] {
+		p, ok := validPort(m[1])
+		if !ok || seen[p] {
 			continue
 		}
 		seen[p] = true
 		ports = append(ports, p)
 	}
 	return ports
+}
+
+// validPort parses a captured port string and reports whether it is a usable
+// TCP port (1–65535). ok=false covers non-numeric and out-of-range values.
+func validPort(s string) (int, bool) {
+	p, err := strconv.Atoi(s)
+	if err != nil || p <= 0 || p > 65535 {
+		return 0, false
+	}
+	return p, true
 }

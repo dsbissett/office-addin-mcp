@@ -36,7 +36,7 @@ func TabulateRegion() tools.Tool {
 		Name:        "excel.tabulateRegion",
 		Description: "Load a range and return it as a typed table with inferred headers + per-column type tags. One call replaces readRange + manual header detection + per-cell type inspection.",
 		Schema:      json.RawMessage(tabulateRegionSchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runTabulateRegion,
 	}
 }
@@ -46,6 +46,13 @@ func runTabulateRegion(ctx context.Context, raw json.RawMessage, env *tools.RunE
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
+	return runPayloadSum(ctx, env, p.selector(), "excel.tabulateRegion", p.args(), func(data any) string {
+		return tabulateRegionSummary(data, p.Address)
+	})
+}
+
+// args builds the Office.js argument map for excel.tabulateRegion.
+func (p tabulateRegionParams) args() map[string]any {
 	args := map[string]any{"address": p.Address}
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
@@ -56,16 +63,16 @@ func runTabulateRegion(ctx context.Context, raw json.RawMessage, env *tools.RunE
 	if p.MaxCells > 0 {
 		args["maxCells"] = p.MaxCells
 	}
-	return runPayloadSum(ctx, env, p.selector(), "excel.tabulateRegion", args, func(data any) string {
-		addr := stringField(data, "address")
-		if addr == "" {
-			addr = p.Address
-		}
-		if boolField(data, "truncated") {
-			return fmt.Sprintf("Region %s exceeds maxCells; not loaded.", addr)
-		}
-		rows := numberField(data, "rowCount")
-		cols := numberField(data, "columnCount")
-		return fmt.Sprintf("Tabulated %s: %d rows × %d columns.", addr, rows, cols)
-	})
+	return args
+}
+
+// tabulateRegionSummary describes the tabulated region's shape or truncation.
+func tabulateRegionSummary(data any, fallbackAddr string) string {
+	addr := addressOr(data, fallbackAddr)
+	if boolField(data, "truncated") {
+		return fmt.Sprintf("Region %s exceeds maxCells; not loaded.", addr)
+	}
+	rows := numberField(data, "rowCount")
+	cols := numberField(data, "columnCount")
+	return fmt.Sprintf("Tabulated %s: %d rows × %d columns.", addr, rows, cols)
 }

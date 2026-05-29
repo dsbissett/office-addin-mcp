@@ -29,6 +29,20 @@ const querySchema = `{
   "additionalProperties": false
 }`
 
+const queryOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "powerpoint.query result",
+  "type": "object",
+  "required": ["slideCount", "shapeCount", "rows", "count", "limited"],
+  "properties": {
+    "slideCount": {"type": "integer", "minimum": 0, "description": "Total slides scanned."},
+    "shapeCount": {"type": "integer", "minimum": 0, "description": "Total shape records before query filtering."},
+    "rows":       {"type": "array", "items": {"type": "object"}, "description": "Result rows after filter/project/groupBy/agg."},
+    "count":      {"type": "integer", "minimum": 0, "description": "Number of rows returned."},
+    "limited":    {"type": "boolean", "description": "True when results were truncated by the limit."}
+  }
+}`
+
 type queryParams struct {
 	Query json.RawMessage `json:"query,omitempty"`
 	officetool.SelectorFields
@@ -37,11 +51,12 @@ type queryParams struct {
 // Query returns the powerpoint.query tool definition.
 func Query() tools.Tool {
 	return tools.Tool{
-		Name:        "powerpoint.query",
-		Description: "Run a JSON-shaped query against the presentation's slide+shape catalog.",
-		Schema:      json.RawMessage(querySchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runQuery,
+		Name:         "powerpoint.query",
+		Description:  "Run a JSON-shaped query against the presentation's slide+shape catalog.",
+		Schema:       json.RawMessage(querySchema),
+		OutputSchema: json.RawMessage(queryOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runQuery,
 	}
 }
 

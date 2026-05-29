@@ -157,7 +157,7 @@ func (s *Session) Acquire(ctx context.Context, ep webview2.Config) (*cdp.Connect
 	// Fast path: read-locked check. If the conn is healthy and the endpoint
 	// matches, return immediately.
 	s.connMu.RLock()
-	if s.conn != nil && endpointEqual(s.epConfig, ep) && !connDone(s.conn) {
+	if s.connUsableLocked(ep) {
 		conn := s.conn
 		return conn, makeReleaseRLock(&s.connMu), nil
 	}
@@ -166,39 +166,67 @@ func (s *Session) Acquire(ctx context.Context, ep webview2.Config) (*cdp.Connect
 	// Slow path: take the write lock, recheck (another goroutine may have
 	// dialed in the gap), then dial if still needed.
 	s.connMu.Lock()
-	if s.conn != nil && endpointEqual(s.epConfig, ep) && !connDone(s.conn) {
-		conn := s.conn
-		s.connMu.Unlock()
-		s.connMu.RLock()
-		return conn, makeReleaseRLock(&s.connMu), nil
+	if s.connUsableLocked(ep) {
+		return s.downgradeToReadLock(s.conn)
 	}
 
-	// Endpoint changed mid-session: drop the old conn so we re-dial.
-	if !endpointEqual(s.epConfig, ep) && (s.epConfig.WSEndpoint != "" || s.epConfig.BrowserURL != "") {
-		s.dropConnLocked()
-	} else if s.conn != nil && connDone(s.conn) {
+	s.refreshEndpointLocked(ep)
+
+	conn, err := s.dialLocked(ctx, ep)
+	if err != nil {
+		s.connMu.Unlock()
+		return nil, nil, err
+	}
+	return s.downgradeToReadLock(conn)
+}
+
+// connUsableLocked reports whether the current connection can be returned to a
+// caller requesting endpoint ep. Must hold connMu (read or write).
+func (s *Session) connUsableLocked(ep webview2.Config) bool {
+	return s.conn != nil && endpointEqual(s.epConfig, ep) && !connDone(s.conn)
+}
+
+// refreshEndpointLocked drops a stale connection (endpoint changed or read
+// pump dead) and records the requested endpoint. Must hold connMu write-locked.
+func (s *Session) refreshEndpointLocked(ep webview2.Config) {
+	if s.endpointChangedLocked(ep) || (s.conn != nil && connDone(s.conn)) {
 		s.dropConnLocked()
 	}
 	s.epConfig = ep
+}
 
+// endpointChangedLocked reports whether the requested endpoint differs from a
+// previously dialed one. A zero-valued stored endpoint (first dial) is not a
+// change. Must hold connMu.
+func (s *Session) endpointChangedLocked(ep webview2.Config) bool {
+	hadEndpoint := s.epConfig.WSEndpoint != "" || s.epConfig.BrowserURL != ""
+	return !endpointEqual(s.epConfig, ep) && hadEndpoint
+}
+
+// dialLocked gates on the reconnect budget then dials, storing the new
+// connection on success. Must hold connMu write-locked; the lock is retained
+// on return (caller is responsible for unlocking / downgrading).
+func (s *Session) dialLocked(ctx context.Context, ep webview2.Config) (*cdp.Connection, error) {
 	if !s.canReconnectLocked() {
-		s.connMu.Unlock()
-		return nil, nil, fmt.Errorf("%w: session %q (%d in %s)",
+		return nil, fmt.Errorf("%w: session %q (%d in %s)",
 			ErrReconnectBudgetExhausted, s.id, s.cfg.ReconnectMax, s.cfg.ReconnectWindow)
 	}
 	conn, err := dialEndpoint(ctx, ep)
 	if err != nil {
 		s.recordReconnectLocked() // count failed attempts too — they consume budget
-		s.connMu.Unlock()
 		// Wrap both ErrDialFailed (so the dispatcher can branch on it) and
 		// the underlying err (so errors.Is(ctx.DeadlineExceeded) still fires).
-		return nil, nil, fmt.Errorf("%w: %w", ErrDialFailed, err)
+		return nil, fmt.Errorf("%w: %w", ErrDialFailed, err)
 	}
 	s.conn = conn
 	s.recordReconnectLocked()
+	return conn, nil
+}
 
-	// dropConnLocked above already cleared per-connection state; nothing more
-	// to reset here. Downgrade to a read lock for the caller.
+// downgradeToReadLock swaps the held write lock for a read lock and returns the
+// standard (conn, release, nil) triple. Must be called holding connMu
+// write-locked.
+func (s *Session) downgradeToReadLock(conn *cdp.Connection) (*cdp.Connection, func(), error) {
 	s.connMu.Unlock()
 	s.connMu.RLock()
 	return conn, makeReleaseRLock(&s.connMu), nil

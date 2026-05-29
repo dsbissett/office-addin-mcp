@@ -25,6 +25,7 @@ func ReadPresentation() tools.Tool {
 		Name:        "powerpoint.readPresentation",
 		Description: "Read top-level presentation metadata: title and slide count.",
 		Schema:      json.RawMessage(readPresentationSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadPresentation,
 	}
 }
@@ -52,6 +53,7 @@ func ReadSlides() tools.Tool {
 		Name:        "powerpoint.readSlides",
 		Description: "List every slide in the presentation with its id and shape names.",
 		Schema:      json.RawMessage(readPresentationSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadSlides,
 	}
 }
@@ -89,6 +91,7 @@ func ReadSlide() tools.Tool {
 		Name:        "powerpoint.readSlide",
 		Description: "Read the shapes on a specific slide: name, type, position, and size.",
 		Schema:      json.RawMessage(readSlideSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadSlide,
 	}
 }
@@ -111,6 +114,7 @@ func AddSlide() tools.Tool {
 		Name:        "powerpoint.addSlide",
 		Description: "Append a new blank slide to the end of the presentation; returns its id.",
 		Schema:      json.RawMessage(readPresentationSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(false)},
 		Run:         runAddSlide,
 	}
 }
@@ -137,6 +141,7 @@ func ReadSelection() tools.Tool {
 		Name:        "powerpoint.readSelection",
 		Description: "Read the ids of the currently selected slides.",
 		Schema:      json.RawMessage(readPresentationSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadSelection,
 	}
 }

@@ -29,6 +29,75 @@ func TestRegister_AllTools(t *testing.T) {
 	}
 }
 
+// boolPtrVal dereferences a *bool, failing the test when it is nil. Used to
+// assert DestructiveHint values that the spec requires to be set explicitly.
+func boolPtrVal(t *testing.T, p *bool, field string) bool {
+	t.Helper()
+	if p == nil {
+		t.Fatalf("%s is nil, want an explicit value", field)
+	}
+	return *p
+}
+
+// TestToolAnnotations asserts the read-only vs mutating classification on a
+// representative slice of this package's tools so an incorrect hint fails the
+// build. Read-only probes must advertise ReadOnlyHint=true with a non-nil
+// DestructiveHint=false; additive mutations must advertise ReadOnlyHint=false
+// with DestructiveHint=false.
+func TestToolAnnotations(t *testing.T) {
+	readOnly := []struct {
+		name string
+		tool tools.Tool
+	}{
+		{"addin.status", Status()},
+		{"addin.listTargets", ListTargets()},
+		{"addin.contextInfo", ContextInfo()},
+		{"addin.cfRuntimeInfo", CFRuntimeInfo()},
+	}
+	for _, tc := range readOnly {
+		t.Run(tc.name, func(t *testing.T) {
+			a := tc.tool.Annotations
+			if a == nil {
+				t.Fatalf("%s: Annotations nil", tc.name)
+			}
+			if !a.ReadOnlyHint {
+				t.Errorf("%s: ReadOnlyHint=false, want true", tc.name)
+			}
+			if boolPtrVal(t, a.DestructiveHint, tc.name+".DestructiveHint") {
+				t.Errorf("%s: DestructiveHint=true, want false", tc.name)
+			}
+			if !a.IdempotentHint {
+				t.Errorf("%s: IdempotentHint=false, want true", tc.name)
+			}
+		})
+	}
+
+	mutating := []struct {
+		name string
+		tool tools.Tool
+	}{
+		{"addin.ensureRunning", EnsureRunning()},
+		{"addin.openDialog", OpenDialog()},
+		{"addin.dialogClose", DialogClose()},
+		{"addin.dialogSubscribe", DialogSubscribe()},
+	}
+	for _, tc := range mutating {
+		t.Run(tc.name, func(t *testing.T) {
+			a := tc.tool.Annotations
+			if a == nil {
+				t.Fatalf("%s: Annotations nil", tc.name)
+			}
+			if a.ReadOnlyHint {
+				t.Errorf("%s: ReadOnlyHint=true, want false (mutating)", tc.name)
+			}
+			// Every mutation in this package is additive, never destructive.
+			if boolPtrVal(t, a.DestructiveHint, tc.name+".DestructiveHint") {
+				t.Errorf("%s: DestructiveHint=true, want false (additive)", tc.name)
+			}
+		})
+	}
+}
+
 // TestStatus_UnreachableEndpoint verifies the structured fallback path:
 // when Discover fails, addin.status still returns OK with reachable=false
 // and a recoveryHint pointing at addin.ensureRunning. Uses port 1 since

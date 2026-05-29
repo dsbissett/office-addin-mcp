@@ -35,6 +35,7 @@ func CreateTable() tools.Tool {
 		Name:        "excel.createTable",
 		Description: "Convert a range into an Excel table.",
 		Schema:      json.RawMessage(createTableSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(false)},
 		Run:         runCreateTable,
 	}
 }
@@ -44,6 +45,13 @@ func runCreateTable(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
+	return runPayloadSum(ctx, env, p.selector(), "excel.createTable", p.args(), func(data any) string {
+		return createTableSummary(data, p.Name, p.Address)
+	})
+}
+
+// args builds the Office.js argument map for excel.createTable.
+func (p createTableParams) args() map[string]any {
 	args := map[string]any{"address": p.Address}
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
@@ -54,16 +62,20 @@ func runCreateTable(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 	if p.HasHeaders != nil {
 		args["hasHeaders"] = *p.HasHeaders
 	}
-	return runPayloadSum(ctx, env, p.selector(), "excel.createTable", args, func(data any) string {
-		name := stringField(data, "name")
-		if name == "" {
-			name = p.Name
-		}
-		if name == "" {
-			return "Created table at " + p.Address + "."
-		}
-		return "Created table " + name + " at " + p.Address + "."
-	})
+	return args
+}
+
+// createTableSummary describes the created table, preferring the returned name
+// then the requested name, then a name-less form.
+func createTableSummary(data any, requestedName, address string) string {
+	name := stringField(data, "name")
+	if name == "" {
+		name = requestedName
+	}
+	if name == "" {
+		return "Created table at " + address + "."
+	}
+	return "Created table " + name + " at " + address + "."
 }
 
 const listTablesSchema = `{
@@ -80,6 +92,7 @@ func ListTables() tools.Tool {
 		Name:        "excel.listTables",
 		Description: "List all tables (ListObjects) in the workbook with name, worksheet, address, header/total flags, row count, and style.",
 		Schema:      json.RawMessage(listTablesSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListTables,
 	}
 }
@@ -115,6 +128,7 @@ func TableInfo() tools.Tool {
 		Name:        "excel.tableInfo",
 		Description: "Detail for a single table: name, worksheet, address, row count, columns (name + filter criteria), header/total flags, and style.",
 		Schema:      json.RawMessage(namedTableSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runTableInfo,
 	}
 }
@@ -156,6 +170,7 @@ func TableRows() tools.Tool {
 		Name:        "excel.tableRows",
 		Description: "Data-body values of a table, truncated when row*column exceeds the cell cap.",
 		Schema:      json.RawMessage(tableRowsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runTableRows,
 	}
 }
@@ -190,6 +205,7 @@ func TableFilters() tools.Tool {
 		Name:        "excel.tableFilters",
 		Description: "Active filter criteria per column for a table. Columns without an active filter have null criteria.",
 		Schema:      json.RawMessage(namedTableSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runTableFilters,
 	}
 }

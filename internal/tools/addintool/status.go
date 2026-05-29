@@ -127,21 +127,8 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 
 	ep, err := webview2.Discover(ctx, env.Endpoint)
 	if err != nil {
-		out.Endpoint = statusEndpoint{
-			BrowserURL: env.Endpoint.BrowserURL,
-			WSURL:      env.Endpoint.WSEndpoint,
-			Reachable:  false,
-			Error:      err.Error(),
-		}
-		out.RecoveryHints = append(out.RecoveryHints,
-			`No CDP endpoint reachable. Confirm Excel is running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222", or call addin.ensureRunning to detect and launch the project.`)
-		if !out.Manifest.Loaded {
-			out.RecoveryHints = append(out.RecoveryHints,
-				"No add-in manifest is loaded yet — call addin.detect (or addin.launch) before issuing excel.* / page.* tools.")
-		}
-		return tools.OKWithSummary("CDP endpoint unreachable; no add-in detected.", out)
+		return statusUnreachable(&out, env, err)
 	}
-
 	out.Endpoint = statusEndpoint{
 		Source:     string(ep.Source),
 		BrowserURL: ep.BrowserURL,
@@ -164,21 +151,37 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 		return tools.OKWithSummary("Connected to "+ep.WSURL+" but Target.getTargets failed.", out)
 	}
 
-	var manifest *addin.Manifest
-	if env.Manifest != nil {
-		manifest = env.Manifest()
-	}
-	classified := addin.ClassifyTargets(targets, manifest)
-	visible := classified[:0]
-	for _, c := range classified {
-		if !p.IncludeInternal && tools.IsInternalURL(c.URL) {
-			continue
-		}
-		visible = append(visible, c)
-	}
+	visible := filterVisibleTargets(addin.ClassifyTargets(targets, statusManifestPtr(env)), p.IncludeInternal)
 	out.Targets = visible
+	appendTargetHints(&out, len(visible))
+	return tools.OKWithSummary(
+		fmt.Sprintf("CDP reachable at %s; %d target(s) visible; %s.", ep.WSURL, len(visible), statusManifestLabel(out.Manifest)),
+		out,
+	)
+}
 
-	if len(visible) == 0 {
+// statusUnreachable fills the endpoint-unreachable branch: marks the endpoint
+// not reachable, records its error, and appends the relevant recovery hints.
+func statusUnreachable(out *statusOutput, env *tools.RunEnv, err error) tools.Result {
+	out.Endpoint = statusEndpoint{
+		BrowserURL: env.Endpoint.BrowserURL,
+		WSURL:      env.Endpoint.WSEndpoint,
+		Reachable:  false,
+		Error:      err.Error(),
+	}
+	out.RecoveryHints = append(out.RecoveryHints,
+		`No CDP endpoint reachable. Confirm Excel is running with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222", or call addin.ensureRunning to detect and launch the project.`)
+	if !out.Manifest.Loaded {
+		out.RecoveryHints = append(out.RecoveryHints,
+			"No add-in manifest is loaded yet — call addin.detect (or addin.launch) before issuing excel.* / page.* tools.")
+	}
+	return tools.OKWithSummary("CDP endpoint unreachable; no add-in detected.", *out)
+}
+
+// appendTargetHints adds the no-visible-targets and no-manifest hints that
+// apply once the endpoint is reachable and targets have been classified.
+func appendTargetHints(out *statusOutput, visibleCount int) {
+	if visibleCount == 0 {
 		out.RecoveryHints = append(out.RecoveryHints,
 			"No add-in targets visible. The taskpane may not have opened yet — verify the add-in is loaded in Excel, or set includeInternal=true to inspect every target.")
 	}
@@ -186,17 +189,23 @@ func runStatus(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tool
 		out.RecoveryHints = append(out.RecoveryHints,
 			"No add-in manifest is loaded — call addin.detect or addin.launch so subsequent tools can match targets by surface.")
 	}
-	manifestLabel := "no manifest"
-	if out.Manifest.Loaded {
-		manifestLabel = out.Manifest.DisplayName
-		if manifestLabel == "" {
-			manifestLabel = out.Manifest.ID
-		}
+}
+
+func statusManifestPtr(env *tools.RunEnv) *addin.Manifest {
+	if env.Manifest != nil {
+		return env.Manifest()
 	}
-	return tools.OKWithSummary(
-		fmt.Sprintf("CDP reachable at %s; %d target(s) visible; %s.", ep.WSURL, len(visible), manifestLabel),
-		out,
-	)
+	return nil
+}
+
+func statusManifestLabel(m statusManifest) string {
+	if !m.Loaded {
+		return "no manifest"
+	}
+	if m.DisplayName != "" {
+		return m.DisplayName
+	}
+	return m.ID
 }
 
 // manifestSummary projects the active manifest (if any) into the wire shape

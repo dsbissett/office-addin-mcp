@@ -14,7 +14,12 @@ func RecordStop() tools.Tool {
 		Name:        "macro.record_stop",
 		Description: "Stop recording the current macro and save it to disk.",
 		Schema:      json.RawMessage(`{"type":"object","additionalProperties":false}`),
-		NoSession:   true,
+		// Additive: persists the recorded macro to a new file; no user data
+		// is overwritten or deleted.
+		Annotations: &tools.Annotations{
+			DestructiveHint: tools.BoolPtr(false),
+		},
+		NoSession: true,
 		Run: func(ctx context.Context, params json.RawMessage, env *tools.RunEnv) tools.Result {
 			if env.Recorder == nil {
 				return tools.Fail(

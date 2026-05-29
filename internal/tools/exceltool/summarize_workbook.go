@@ -27,7 +27,7 @@ func SummarizeWorkbook() tools.Tool {
 		Name:        "excel.summarizeWorkbook",
 		Description: "One-call workbook discovery: sheets, tables, named ranges, per-sheet used-range bounds.",
 		Schema:      json.RawMessage(summarizeWorkbookSchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runSummarizeWorkbook,
 	}
 }

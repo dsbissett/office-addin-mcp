@@ -32,6 +32,7 @@ func RunScript() tools.Tool {
 		Name:        "outlook.runScript",
 		Description: "Run an arbitrary async JS body with Office.context.mailbox; the body returns a JSON-serializable value. Outlook has no batched-context Outlook.run API.",
 		Schema:      json.RawMessage(runScriptSchema),
+		Annotations: &tools.Annotations{DestructiveHint: tools.BoolPtr(true), OpenWorldHint: tools.BoolPtr(true)},
 		Run:         runRunScript,
 	}
 }

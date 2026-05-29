@@ -25,23 +25,39 @@ func ProbeCDPEndpoint(ctx context.Context, url string, timeout time.Duration) Pr
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint, nil)
-	if err != nil {
-		return ProbeResult{Reason: fmt.Sprintf("invalid-request:%s", err)}
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		if probeCtx.Err() == context.DeadlineExceeded {
-			return ProbeResult{Reason: "timeout"}
-		}
-		return ProbeResult{Reason: "unreachable"}
+	resp, fail := sendVersionRequest(probeCtx, endpoint)
+	if fail != nil {
+		return *fail
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return ProbeResult{Reason: fmt.Sprintf("http-error:%d", resp.StatusCode)}
 	}
+	return decodeVersionBody(resp)
+}
 
+// sendVersionRequest issues GET endpoint within probeCtx. On success it returns
+// the response and a nil fail. On any transport-level failure it returns a
+// non-nil fail ProbeResult (and a nil response) describing the reason.
+func sendVersionRequest(probeCtx context.Context, endpoint string) (*http.Response, *ProbeResult) {
+	req, err := http.NewRequestWithContext(probeCtx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, &ProbeResult{Reason: fmt.Sprintf("invalid-request:%s", err)}
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if probeCtx.Err() == context.DeadlineExceeded {
+			return nil, &ProbeResult{Reason: "timeout"}
+		}
+		return nil, &ProbeResult{Reason: "unreachable"}
+	}
+	return resp, nil
+}
+
+// decodeVersionBody parses a /json/version response, requiring a non-empty
+// Browser field. A malformed or empty body yields an invalid-response result.
+func decodeVersionBody(resp *http.Response) ProbeResult {
 	var body struct {
 		Browser string `json:"Browser"`
 	}

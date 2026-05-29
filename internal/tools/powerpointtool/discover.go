@@ -18,6 +18,32 @@ const discoverSchema = `{
   "additionalProperties": false
 }`
 
+const discoverOutputSchema = `{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "powerpoint.discover result",
+  "type": "object",
+  "required": ["cached", "filePath", "fingerprint"],
+  "properties": {
+    "cached":      {"type": "boolean", "description": "True when the snapshot came from the persistent doccache."},
+    "filePath":    {"type": "string", "description": "Stable file identity (presentation title) used as the cache key."},
+    "fingerprint": {"type": "string", "description": "Content fingerprint used to detect changes."},
+    "title":       {"type": ["string", "null"], "description": "Presentation title, or null when unset."},
+    "slideCount":  {"type": "integer", "minimum": 0},
+    "shapeCount":  {"type": "integer", "minimum": 0},
+    "slides": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id":         {"type": "string"},
+          "index":      {"type": "integer"},
+          "shapeCount": {"type": "integer"}
+        }
+      }
+    }
+  }
+}`
+
 type discoverParams struct {
 	Force bool `json:"force,omitempty"`
 	officetool.SelectorFields
@@ -26,11 +52,12 @@ type discoverParams struct {
 // Discover returns the powerpoint.discover tool definition.
 func Discover() tools.Tool {
 	return tools.Tool{
-		Name:        "powerpoint.discover",
-		Description: "Cached PowerPoint discovery: title, slide count, shape count per slide.",
-		Schema:      json.RawMessage(discoverSchema),
-		Annotations: &tools.Annotations{ReadOnlyHint: true},
-		Run:         runDiscover,
+		Name:         "powerpoint.discover",
+		Description:  "Cached PowerPoint discovery: title, slide count, shape count per slide.",
+		Schema:       json.RawMessage(discoverSchema),
+		OutputSchema: json.RawMessage(discoverOutputSchema),
+		Annotations:  &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
+		Run:          runDiscover,
 	}
 }
 

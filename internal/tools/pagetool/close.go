@@ -34,6 +34,9 @@ func Close() tools.Tool {
 		Description: "Close a CDP page target. Clears the sticky default if it pointed at the closed target.",
 		Schema:      json.RawMessage(closeSchema),
 		Run:         runClose,
+		// Destructive: closes (removes) a page target. Idempotent — once the
+		// target is closed the end state is the same on repeat.
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 	}
 }
 
@@ -42,41 +45,56 @@ func runClose(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) tools
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	if p.TargetID == "" && p.URLPattern == "" && p.Surface == "" {
-		return tools.Fail(tools.CategoryValidation, "missing_selector", "provide one of: targetId, urlPattern, surface", false)
+	if res, ok := requireSelector(p.TargetID, p.URLPattern, p.Surface); !ok {
+		return res
 	}
+	targetID, success, errRes, ok := resolveAndClose(ctx, p, env)
+	if !ok {
+		return errRes
+	}
+	if env.ClearDefaultSelection != nil {
+		env.ClearDefaultSelection()
+	}
+	return closeResult(targetID, success)
+}
+
+// resolveAndClose opens a connection, resolves the selector via the attach
+// path (so the wrong target is never closed), and drives Target.closeTarget.
+// On any failure it returns ok=false with the error envelope to surface.
+func resolveAndClose(ctx context.Context, p closeParams, env *tools.RunEnv) (targetID string, success bool, errRes tools.Result, ok bool) {
 	conn, err := env.Conn(ctx)
 	if err != nil {
-		return tools.Fail(tools.CategoryConnection, "open_failed", err.Error(), true)
+		return "", false, tools.Fail(tools.CategoryConnection, "open_failed", err.Error(), true), false
 	}
-	// Resolve via the existing selector path so we never close the wrong target.
 	att, err := env.Attach(ctx, makeSelector(p.TargetID, p.URLPattern, p.Surface))
 	if err != nil {
-		return tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false)
+		return "", false, tools.Fail(tools.CategoryNotFound, "attach_failed", err.Error(), false), false
 	}
 	rawRes, err := conn.Send(ctx, "", "Target.closeTarget", map[string]any{
 		"targetId": att.Target.TargetID,
 	})
 	if err != nil {
-		return tools.ClassifyCDPErr("close_failed", err)
+		return "", false, tools.ClassifyCDPErr("close_failed", err), false
 	}
 	var out struct {
 		Success bool `json:"success"`
 	}
 	_ = json.Unmarshal(rawRes, &out)
+	return att.Target.TargetID, out.Success, tools.Result{}, true
+}
 
-	if env.ClearDefaultSelection != nil {
-		env.ClearDefaultSelection()
-	}
-	summary := "Closed page " + att.Target.TargetID + "."
-	if !out.Success {
-		summary = "Close requested for " + att.Target.TargetID + " but CDP reported success=false."
+// closeResult shapes the OK envelope for a completed Target.closeTarget,
+// branching the summary on whether CDP reported success.
+func closeResult(targetID string, success bool) tools.Result {
+	summary := "Closed page " + targetID + "."
+	if !success {
+		summary = "Close requested for " + targetID + " but CDP reported success=false."
 	}
 	return tools.OKWithSummary(
 		summary,
 		struct {
 			TargetID string `json:"targetId"`
 			Success  bool   `json:"success"`
-		}{TargetID: att.Target.TargetID, Success: out.Success},
+		}{TargetID: targetID, Success: success},
 	)
 }

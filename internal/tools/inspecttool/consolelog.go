@@ -54,6 +54,7 @@ func ConsoleLog() tools.Tool {
 		Name:        "page.consoleLog",
 		Description: "Drain buffered console output (console.*, uncaught exceptions, browser log entries) for the active page. Auto-subscribes on first call; Chrome replays existing console messages at subscription time so logs written before the first call are included.",
 		Schema:      json.RawMessage(consoleLogSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runConsoleLog,
 	}
 }
@@ -63,12 +64,7 @@ func runConsoleLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	if p.MaxBuffer == 0 {
-		p.MaxBuffer = defaultMaxBuffer
-	}
-	if p.Limit == 0 {
-		p.Limit = defaultDrainLimit
-	}
+	applyConsoleLogDefaults(&p)
 
 	att, err := env.Attach(ctx, makeSelector(p.TargetID, p.URLPattern, p.Surface))
 	if err != nil {
@@ -97,12 +93,8 @@ func runConsoleLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 		Peek:     p.Peek,
 	})
 	records := filterConsoleLevels(res.Records, p.Levels)
-	suffix := ""
-	if res.Dropped {
-		suffix = " (buffer overflowed; older entries dropped)"
-	}
 	return tools.OKWithSummary(
-		fmt.Sprintf("Drained %d console record(s)%s.", len(records), suffix),
+		fmt.Sprintf("Drained %d console record(s)%s.", len(records), overflowSuffix(res.Dropped)),
 		consoleLogResponse{
 			TargetID: att.Target.TargetID,
 			Records:  records,
@@ -111,6 +103,26 @@ func runConsoleLog(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 			Capacity: buf.Max(),
 		},
 	)
+}
+
+// applyConsoleLogDefaults fills the zero-valued buffer/limit knobs with their
+// documented defaults.
+func applyConsoleLogDefaults(p *consoleLogParams) {
+	if p.MaxBuffer == 0 {
+		p.MaxBuffer = defaultMaxBuffer
+	}
+	if p.Limit == 0 {
+		p.Limit = defaultDrainLimit
+	}
+}
+
+// overflowSuffix returns the human-readable suffix appended to drain summaries
+// when the ring buffer overflowed and dropped older entries.
+func overflowSuffix(dropped bool) string {
+	if dropped {
+		return " (buffer overflowed; older entries dropped)"
+	}
+	return ""
 }
 
 type consoleLogResponse struct {
@@ -131,17 +143,24 @@ func filterConsoleLevels(records []session.EventRecord, levels []string) []sessi
 	}
 	out := records[:0]
 	for _, r := range records {
-		key := strings.ToLower(r.Kind)
-		if _, ok := want[key]; ok {
+		if consoleLevelWanted(strings.ToLower(r.Kind), want) {
 			out = append(out, r)
-			continue
-		}
-		// Allow "log" / "warn" / "error" shorthands to match "console.log" etc.
-		if strings.HasPrefix(key, "console.") {
-			if _, ok := want[strings.TrimPrefix(key, "console.")]; ok {
-				out = append(out, r)
-			}
 		}
 	}
 	return out
+}
+
+// consoleLevelWanted reports whether a (lowercased) console kind is selected by
+// the want set. A "console.log" kind matches both the exact "console.log" and
+// the "log" shorthand.
+func consoleLevelWanted(key string, want map[string]struct{}) bool {
+	if _, ok := want[key]; ok {
+		return true
+	}
+	if shorthand, ok := strings.CutPrefix(key, "console."); ok {
+		if _, ok := want[shorthand]; ok {
+			return true
+		}
+	}
+	return false
 }

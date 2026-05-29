@@ -54,17 +54,33 @@ func Discover(ctx context.Context, cfg Config) (Endpoint, error) {
 		return Endpoint{WSURL: cfg.WSEndpoint, Source: SourceWSEndpoint}, nil
 	}
 	if cfg.BrowserURL != "" {
-		ws, err := cdp.ResolveBrowserWSURL(ctx, cfg.BrowserURL)
-		if err != nil {
-			return Endpoint{}, fmt.Errorf("webview2: probe %s: %w", cfg.BrowserURL, err)
-		}
-		return Endpoint{BrowserURL: cfg.BrowserURL, WSURL: ws, Source: SourceBrowserURL}, nil
+		return discoverExplicitBrowserURL(ctx, cfg.BrowserURL)
 	}
-	if ws, err := cdp.ResolveBrowserWSURL(ctx, DefaultBrowserURL); err == nil {
-		return Endpoint{BrowserURL: DefaultBrowserURL, WSURL: ws, Source: SourceDefault}, nil
+	if ep, ok := discoverDefaultBrowserURL(ctx); ok {
+		return ep, nil
 	}
 	if ep, err := scanOSEndpoints(ctx); err == nil {
 		return ep, nil
 	}
 	return Endpoint{}, ErrNotFound
+}
+
+// discoverExplicitBrowserURL probes a user-named HTTP endpoint. Failure is hard
+// (wrapped error) because the user explicitly asked for this URL.
+func discoverExplicitBrowserURL(ctx context.Context, browserURL string) (Endpoint, error) {
+	ws, err := cdp.ResolveBrowserWSURL(ctx, browserURL)
+	if err != nil {
+		return Endpoint{}, fmt.Errorf("webview2: probe %s: %w", browserURL, err)
+	}
+	return Endpoint{BrowserURL: browserURL, WSURL: ws, Source: SourceBrowserURL}, nil
+}
+
+// discoverDefaultBrowserURL probes the conventional :9222 endpoint. Failure is
+// soft (ok=false) so Discover can fall through to the OS scan.
+func discoverDefaultBrowserURL(ctx context.Context) (Endpoint, bool) {
+	ws, err := cdp.ResolveBrowserWSURL(ctx, DefaultBrowserURL)
+	if err != nil {
+		return Endpoint{}, false
+	}
+	return Endpoint{BrowserURL: DefaultBrowserURL, WSURL: ws, Source: SourceDefault}, true
 }

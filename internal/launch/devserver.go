@@ -56,43 +56,74 @@ func ensureDevServer(ctx context.Context, project *Project, env []string, timeou
 		timeout = defaultDevServerTimeout
 	}
 
-	cmd, err := buildPackageScriptCommand(project, env)
+	cmd, output, err := spawnDevServer(project, env)
 	if err != nil {
 		return nil, err
+	}
+	return waitForDevServerPort(ctx, project, cmd, output, time.Now().Add(timeout))
+}
+
+// spawnDevServer builds and starts the `<runner> run <script>` child, wiring
+// its stdout/stderr into a fresh output buffer.
+func spawnDevServer(project *Project, env []string) (*exec.Cmd, *outputBuffer, error) {
+	cmd, err := buildPackageScriptCommand(project, env)
+	if err != nil {
+		return nil, nil, err
 	}
 	output := newOutputBuffer(maxOutputLines)
 	attachOutput(cmd, output)
 	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("launch: spawn dev server (%s run %s): %w", project.PackageManager, project.DevServer.Script, err)
+		return nil, nil, fmt.Errorf("launch: spawn dev server (%s run %s): %w", project.PackageManager, project.DevServer.Script, err)
 	}
+	return cmd, output, nil
+}
 
-	deadline := time.Now().Add(timeout)
+// waitForDevServerPort polls the dev-server port until it opens, the child
+// exits, the context is cancelled, or the deadline elapses.
+func waitForDevServerPort(ctx context.Context, project *Project, cmd *exec.Cmd, output *outputBuffer, deadline time.Time) (*devServerHandle, error) {
+	port := project.DevServer.Port
 	exited := waitChild(cmd)
-
 	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			killProcess(cmd)
-			return nil, ctx.Err()
-		case st := <-exited:
-			return nil, fmt.Errorf("launch: dev server script %q exited (%v) before port %d became ready: %s",
-				project.DevServer.Script, st, port, output.tail())
-		default:
+		if done, err := devServerPreempt(ctx, cmd, project, output, exited); done {
+			return nil, err
 		}
 		if IsPortListening(port, devServerProbeTimeout) {
 			return &devServerHandle{cmd: cmd, port: port, output: output}, nil
 		}
-		select {
-		case <-time.After(probeInterval):
-		case <-ctx.Done():
-			killProcess(cmd)
-			return nil, ctx.Err()
+		if err := devServerInterval(ctx, cmd); err != nil {
+			return nil, err
 		}
 	}
-
 	killProcess(cmd)
 	return nil, fmt.Errorf("launch: timed out waiting for dev server at http://localhost:%d (script %q): %s",
 		port, project.DevServer.Script, output.tail())
+}
+
+// devServerPreempt non-blockingly checks for context cancellation (kills the
+// child) or an early child exit. done=true means the caller should return err.
+func devServerPreempt(ctx context.Context, cmd *exec.Cmd, project *Project, output *outputBuffer, exited <-chan error) (done bool, err error) {
+	select {
+	case <-ctx.Done():
+		killProcess(cmd)
+		return true, ctx.Err()
+	case st := <-exited:
+		return true, fmt.Errorf("launch: dev server script %q exited (%v) before port %d became ready: %s",
+			project.DevServer.Script, st, project.DevServer.Port, output.tail())
+	default:
+		return false, nil
+	}
+}
+
+// devServerInterval sleeps one probe interval, killing the child and returning
+// ctx.Err() if the context is cancelled while waiting.
+func devServerInterval(ctx context.Context, cmd *exec.Cmd) error {
+	select {
+	case <-time.After(probeInterval):
+		return nil
+	case <-ctx.Done():
+		killProcess(cmd)
+		return ctx.Err()
+	}
 }
 
 // buildPackageScriptCommand assembles `<runner> run <script>` for the

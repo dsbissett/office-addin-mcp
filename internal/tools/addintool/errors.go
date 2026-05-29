@@ -14,26 +14,32 @@ import (
 func mapPayloadError(err error) tools.Result {
 	var oerr *officejs.OfficeError
 	if errors.As(err, &oerr) {
-		details := map[string]any{}
-		if len(oerr.DebugInfo) > 0 {
-			var di any
-			if json.Unmarshal(oerr.DebugInfo, &di) == nil {
-				details["debugInfo"] = di
-			}
-		}
-		code := oerr.Code
-		if code == "" {
-			code = "office_js_error"
-		}
-		res := tools.FailWithDetails(tools.CategoryOfficeJS, code, oerr.Message, false, details)
-		res.Err.RecoveryHint = recoveryHintForOfficeCode(code)
-		return res
+		return officeErrToResult(oerr)
 	}
 	var pe *officejs.ProtocolException
 	if errors.As(err, &pe) {
 		return tools.Fail(tools.CategoryProtocol, "payload_protocol_exception", pe.Text, false)
 	}
 	return tools.ClassifyCDPErr("payload_failed", err)
+}
+
+// officeErrToResult maps an Office.js error into the office_js envelope shape,
+// attaching parsed DebugInfo (when valid JSON) and a per-code recovery hint.
+func officeErrToResult(oerr *officejs.OfficeError) tools.Result {
+	details := map[string]any{}
+	if len(oerr.DebugInfo) > 0 {
+		var di any
+		if json.Unmarshal(oerr.DebugInfo, &di) == nil {
+			details["debugInfo"] = di
+		}
+	}
+	code := oerr.Code
+	if code == "" {
+		code = "office_js_error"
+	}
+	res := tools.FailWithDetails(tools.CategoryOfficeJS, code, oerr.Message, false, details)
+	res.Err.RecoveryHint = recoveryHintForOfficeCode(code)
+	return res
 }
 
 // recoveryHintForOfficeCode returns a short suggestion for the well-known

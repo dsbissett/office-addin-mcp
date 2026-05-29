@@ -31,6 +31,7 @@ func ReadRange() tools.Tool {
 		Name:        "excel.readRange",
 		Description: "Read values, formulas, and number formats of a range. Defaults to the active worksheet.",
 		Schema:      json.RawMessage(readRangeSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runReadRange,
 	}
 }
@@ -52,16 +53,10 @@ func runReadRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) t
 // rangeReadSummary builds a "Read N cells from <address>." line for tools that
 // return {address, rowCount, columnCount, truncated} payloads.
 func rangeReadSummary(data any, verb, fallbackAddr string) string {
-	addr := stringField(data, "address")
-	if addr == "" {
-		addr = fallbackAddr
-	}
+	addr := addressOr(data, fallbackAddr)
+	truncSuffix := truncatedSuffix(data)
 	rows := numberField(data, "rowCount")
 	cols := numberField(data, "columnCount")
-	truncSuffix := ""
-	if boolField(data, "truncated") {
-		truncSuffix = " (truncated)"
-	}
 	if rows > 0 && cols > 0 {
 		return fmt.Sprintf("%s %dx%d cells from %s%s.", verb, rows, cols, addr, truncSuffix)
 	}
@@ -69,6 +64,23 @@ func rangeReadSummary(data any, verb, fallbackAddr string) string {
 		return fmt.Sprintf("%s %s%s.", verb, addr, truncSuffix)
 	}
 	return verb + " range."
+}
+
+// addressOr returns the payload's "address" field, falling back to fallbackAddr
+// when absent.
+func addressOr(data any, fallbackAddr string) string {
+	if addr := stringField(data, "address"); addr != "" {
+		return addr
+	}
+	return fallbackAddr
+}
+
+// truncatedSuffix returns " (truncated)" when the payload flags truncated=true.
+func truncatedSuffix(data any) string {
+	if boolField(data, "truncated") {
+		return " (truncated)"
+	}
+	return ""
 }
 
 func numberField(data any, key string) int {
@@ -119,6 +131,7 @@ func WriteRange() tools.Tool {
 		Name:        "excel.writeRange",
 		Description: "Write values, formulas, or number formats to a range. At least one of values/formulas/numberFormat is required.",
 		Schema:      json.RawMessage(writeRangeSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runWriteRange,
 	}
 }
@@ -128,25 +141,36 @@ func runWriteRange(ctx context.Context, raw json.RawMessage, env *tools.RunEnv) 
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return tools.Fail(tools.CategoryValidation, "param_decode", err.Error(), false)
 	}
-	if len(p.Values) == 0 && len(p.Formulas) == 0 && len(p.NumberFormat) == 0 {
+	if p.hasNoPayload() {
 		return tools.Fail(tools.CategoryValidation, "missing_payload", "provide at least one of: values, formulas, numberFormat", false)
 	}
+	return runPayloadSum(ctx, env, p.selector(), "excel.writeRange", p.args(), func(data any) string {
+		return rangeReadSummary(data, "Wrote", p.Address)
+	})
+}
+
+// hasNoPayload reports whether none of values/formulas/numberFormat were supplied.
+func (p writeRangeParams) hasNoPayload() bool {
+	return len(p.Values) == 0 && len(p.Formulas) == 0 && len(p.NumberFormat) == 0
+}
+
+// args builds the Office.js argument map for excel.writeRange.
+func (p writeRangeParams) args() map[string]any {
 	args := map[string]any{"address": p.Address}
 	if p.Sheet != "" {
 		args["sheet"] = p.Sheet
 	}
-	if len(p.Values) > 0 {
-		args["values"] = json.RawMessage(p.Values)
+	setRawArg(args, "values", p.Values)
+	setRawArg(args, "formulas", p.Formulas)
+	setRawArg(args, "numberFormat", p.NumberFormat)
+	return args
+}
+
+// setRawArg sets args[key] to raw when raw is non-empty.
+func setRawArg(args map[string]any, key string, raw json.RawMessage) {
+	if len(raw) > 0 {
+		args[key] = json.RawMessage(raw)
 	}
-	if len(p.Formulas) > 0 {
-		args["formulas"] = json.RawMessage(p.Formulas)
-	}
-	if len(p.NumberFormat) > 0 {
-		args["numberFormat"] = json.RawMessage(p.NumberFormat)
-	}
-	return runPayloadSum(ctx, env, p.selector(), "excel.writeRange", args, func(data any) string {
-		return rangeReadSummary(data, "Wrote", p.Address)
-	})
 }
 
 const getSelectedRangeSchema = `{
@@ -167,6 +191,7 @@ func GetSelectedRange() tools.Tool {
 		Name:        "excel.getSelectedRange",
 		Description: "Return the address, values, and shape of the currently selected range.",
 		Schema:      json.RawMessage(getSelectedRangeSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runGetSelectedRange,
 	}
 }
@@ -202,6 +227,7 @@ func SetSelectedRange() tools.Tool {
 		Name:        "excel.setSelectedRange",
 		Description: "Select a range by address, optionally on a named sheet.",
 		Schema:      json.RawMessage(setSelectedRangeSchema),
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true)},
 		Run:         runSetSelectedRange,
 	}
 }
@@ -246,6 +272,7 @@ func ActiveRange() tools.Tool {
 		Name:        "excel.activeRange",
 		Description: "Currently selected Excel range with values + dimensions. Optional formulas / number formats. Truncates oversized payloads to the top-left cell.",
 		Schema:      json.RawMessage(activeRangeSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runActiveRange,
 	}
 }
@@ -291,6 +318,7 @@ func UsedRange() tools.Tool {
 		Name:        "excel.usedRange",
 		Description: "Values (and optionally formulas / number formats) for a worksheet's used range, truncated when it exceeds the cell cap.",
 		Schema:      json.RawMessage(usedRangeSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runUsedRange,
 	}
 }
@@ -362,6 +390,7 @@ func RangeProperties() tools.Tool {
 		Name:        "excel.rangeProperties",
 		Description: "Range properties: value types, hasSpill, row/column hidden flags, optional format (font/fill/alignment) and style.",
 		Schema:      json.RawMessage(rangePropertiesSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runRangeProperties,
 	}
 }
@@ -394,6 +423,7 @@ func RangeFormulas() tools.Tool {
 		Name:        "excel.rangeFormulas",
 		Description: "Formulas (A1 and R1C1) and resolved values for a range. Useful for verifying formula edits.",
 		Schema:      json.RawMessage(rangeFormulasSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runRangeFormulas,
 	}
 }
@@ -433,6 +463,7 @@ func RangeSpecialCells() tools.Tool {
 		Name:        "excel.rangeSpecialCells",
 		Description: "Locate special cells inside a range: constants, formulas, blanks, or visible. Returns matching address and cell count.",
 		Schema:      json.RawMessage(rangeSpecialCellsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runRangeSpecialCells,
 	}
 }
@@ -448,17 +479,20 @@ func runRangeSpecialCells(ctx context.Context, raw json.RawMessage, env *tools.R
 		args["valueType"] = p.ValueType
 	}
 	return runPayloadSum(ctx, env, p.selector(), "excel.rangeSpecialCells", args, func(data any) string {
-		count := numberField(data, "cellCount")
-		addr := stringField(data, "address")
-		switch {
-		case count > 0 && addr != "":
-			return fmt.Sprintf("Found %d %s cell(s) at %s.", count, p.CellType, addr)
-		case count > 0:
-			return fmt.Sprintf("Found %d %s cell(s).", count, p.CellType)
-		default:
-			return fmt.Sprintf("No %s cells found.", p.CellType)
-		}
+		return specialCellsSummary(data, p.CellType)
 	})
+}
+
+// specialCellsSummary describes how many special cells of cellType were found.
+func specialCellsSummary(data any, cellType string) string {
+	count := numberField(data, "cellCount")
+	if count == 0 {
+		return fmt.Sprintf("No %s cells found.", cellType)
+	}
+	if addr := stringField(data, "address"); addr != "" {
+		return fmt.Sprintf("Found %d %s cell(s) at %s.", count, cellType, addr)
+	}
+	return fmt.Sprintf("Found %d %s cell(s).", count, cellType)
 }
 
 const findInRangeSchema = `{
@@ -486,6 +520,7 @@ func FindInRange() tools.Tool {
 		Name:        "excel.findInRange",
 		Description: "Find all matches of a text string within a range. Returns the combined match address and cell count.",
 		Schema:      json.RawMessage(findInRangeSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runFindInRange,
 	}
 }
@@ -526,6 +561,7 @@ func ListConditionalFormats() tools.Tool {
 		Name:        "excel.listConditionalFormats",
 		Description: "List conditional-format rules on a range. Omit address to use the active worksheet's used range.",
 		Schema:      json.RawMessage(listConditionalFormatsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListConditionalFormats,
 	}
 }
@@ -554,6 +590,7 @@ func ListDataValidations() tools.Tool {
 		Name:        "excel.listDataValidations",
 		Description: "Data-validation configuration on a range: type, rule, error alert, prompt. Omit address to use the active selection.",
 		Schema:      json.RawMessage(listDataValidationsSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListDataValidations,
 	}
 }

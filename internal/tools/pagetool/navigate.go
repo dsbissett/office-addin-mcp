@@ -37,6 +37,10 @@ func Navigate() tools.Tool {
 		Description: "Navigate the chosen page target to a URL via Page.navigate. Returns frameId/loaderId or surfaces errorText as a protocol failure.",
 		Schema:      json.RawMessage(navigateSchema),
 		Run:         runNavigate,
+		// Destructive: replaces the page contents by navigating away. Touches
+		// arbitrary external URLs (OpenWorld). Navigating to the same URL
+		// yields the same end state (idempotent).
+		Annotations: &tools.Annotations{IdempotentHint: true, DestructiveHint: tools.BoolPtr(true), OpenWorldHint: tools.BoolPtr(true)},
 	}
 }
 

@@ -22,6 +22,7 @@ func WorkbookInfo() tools.Tool {
 		Name:        "excel.workbookInfo",
 		Description: "Workbook-level metadata: name, save state, calculation mode/state, and protection state.",
 		Schema:      json.RawMessage(workbookInfoSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runWorkbookInfo,
 	}
 }
@@ -46,6 +47,7 @@ func CalculationState() tools.Tool {
 		Name:        "excel.calculationState",
 		Description: "Workbook calculation mode (automatic/manual/etc.) and current calculation state.",
 		Schema:      json.RawMessage(workbookInfoSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runCalculationState,
 	}
 }
@@ -75,6 +77,7 @@ func ListNamedItems() tools.Tool {
 		Name:        "excel.listNamedItems",
 		Description: "List workbook-scoped named items (named ranges and formulas) with name, type, value, formula, visibility, and comment.",
 		Schema:      json.RawMessage(workbookInfoSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runListNamedItems,
 	}
 }
@@ -95,6 +98,7 @@ func CustomXMLParts() tools.Tool {
 		Name:        "excel.customXmlParts",
 		Description: "List custom XML parts stored in the workbook: id and namespace URI.",
 		Schema:      json.RawMessage(workbookInfoSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runCustomXMLParts,
 	}
 }
@@ -129,6 +133,7 @@ func SettingsGet() tools.Tool {
 		Name:        "excel.settingsGet",
 		Description: "Read add-in document settings from Office.context.document.settings. Returns all keys or a single key's value.",
 		Schema:      json.RawMessage(settingsGetSchema),
+		Annotations: &tools.Annotations{ReadOnlyHint: true, IdempotentHint: true, DestructiveHint: tools.BoolPtr(false)},
 		Run:         runSettingsGet,
 	}
 }
@@ -143,14 +148,30 @@ func runSettingsGet(ctx context.Context, raw json.RawMessage, env *tools.RunEnv)
 		args["key"] = p.Key
 	}
 	return runPayloadSum(ctx, env, p.selector(), "excel.settingsGet", args, func(data any) string {
-		if p.Key != "" {
-			return "Read setting " + p.Key + "."
-		}
-		if m, ok := data.(map[string]any); ok {
-			if settings, ok := m["settings"].(map[string]any); ok {
-				return fmt.Sprintf("Read %d setting(s).", len(settings))
-			}
-		}
-		return "Read add-in settings."
+		return settingsGetSummary(data, p.Key)
 	})
+}
+
+// settingsGetSummary describes a single-key read or counts the returned settings.
+func settingsGetSummary(data any, key string) string {
+	if key != "" {
+		return "Read setting " + key + "."
+	}
+	if n, ok := settingsCount(data); ok {
+		return fmt.Sprintf("Read %d setting(s).", n)
+	}
+	return "Read add-in settings."
+}
+
+// settingsCount returns the number of entries in the payload's "settings" map.
+func settingsCount(data any) (int, bool) {
+	m, ok := data.(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	settings, ok := m["settings"].(map[string]any)
+	if !ok {
+		return 0, false
+	}
+	return len(settings), true
 }
