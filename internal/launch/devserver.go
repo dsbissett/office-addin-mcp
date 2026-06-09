@@ -183,6 +183,15 @@ func (b *outputBuffer) append(chunk []byte) {
 	}
 }
 
+// Write lets the buffer serve as cmd.Stdout/cmd.Stderr. Going through
+// cmd.Wait (which waits for its internal output-copy goroutines) instead of
+// our own pipe-draining goroutines guarantees all output is captured before
+// the wait returns — draining via StdoutPipe races Wait closing the pipe.
+func (b *outputBuffer) Write(p []byte) (int, error) {
+	b.append(p)
+	return len(p), nil
+}
+
 func (b *outputBuffer) tail() string {
 	if b == nil {
 		return ""
@@ -210,32 +219,12 @@ func (b *outputBuffer) snapshot() []string {
 	return out
 }
 
-// attachOutput pipes a child's stdout+stderr into the output buffer. Errors
-// piping the streams are non-fatal — we lose visibility but the launch can
-// still succeed.
+// attachOutput pipes a child's stdout+stderr into the output buffer. cmd.Wait
+// flushes its internal copy goroutines before returning, so output is never
+// lost to a wait/drain race.
 func attachOutput(cmd *exec.Cmd, buf *outputBuffer) {
-	stdout, err := cmd.StdoutPipe()
-	if err == nil {
-		go drainPipe(stdout, buf)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err == nil {
-		go drainPipe(stderr, buf)
-	}
-}
-
-func drainPipe(r interface{ Read(p []byte) (int, error) }, buf *outputBuffer) {
-	defer internallog.RecoverGoroutine("launch.drainPipe")
-	chunk := make([]byte, 4096)
-	for {
-		n, err := r.Read(chunk)
-		if n > 0 {
-			buf.append(chunk[:n])
-		}
-		if err != nil {
-			return
-		}
-	}
+	cmd.Stdout = buf
+	cmd.Stderr = buf
 }
 
 // waitChild returns a channel that emits the child's exit status as soon as
