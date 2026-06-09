@@ -333,6 +333,9 @@ func TestStopExcel_RunsTrackedStop(t *testing.T) {
 // --- LaunchExcel branches (no real Office spawn) --------------------------
 
 func TestLaunchExcel_ReusesAliveTrackedLaunch(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("LaunchExcel is Windows-only past the platform guard")
+	}
 	t.Cleanup(func() { defaultRegistry.launches = map[string]*TrackedLaunch{} })
 	cdpURL := startCDPStub(t)
 	manifest := "C:/proj/reuse-manifest.xml"

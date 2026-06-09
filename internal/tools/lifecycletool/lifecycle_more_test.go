@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/dsbissett/office-addin-mcp/internal/addin"
@@ -222,6 +223,9 @@ func TestLaunchTool_AddinNotFound(t *testing.T) {
 // runLaunch without spawning Excel. resolveLauncher (npx LookPath) and
 // buildLaunchEnv both run before any child process is started.
 func TestLaunchTool_PortAlreadyConfigured(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("runLaunch reaches launchErrToResult only past the Windows-only platform guard")
+	}
 	t.Setenv("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--remote-debugging-port=9222")
 	dir, manifestPath := validProjectDir(t)
 	if _, ok := launch.LookupLaunch(manifestPath); ok {
